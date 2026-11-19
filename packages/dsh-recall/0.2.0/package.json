@@ -1,0 +1,36 @@
+{
+  "name": "dsh-recall",
+  "version": "0.2.0",
+  "description": "提炼记忆层：每轮取最后一句 user 消息当线索，从 提炼记忆.jsonl 挑相关记忆注入上下文。",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "memory",
+    "recall"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  },
+  "author": "Nyarlice",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nyarlice/one-her.git"
+  }
+}

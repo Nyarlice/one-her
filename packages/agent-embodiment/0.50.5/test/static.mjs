@@ -1,0 +1,321 @@
+/**
+ * 纯离线静态检查（不依赖 Cordis、不需要先解包 app.asar）。
+ *
+ * 覆盖：模块导出形状、Config 的 Standard Schema 校验、包资源能否被 exports 解析、
+ * locale 元数据、bundle patch 的结构、client.js 能否在 mock 的
+ * __ModuleLoader__/cordis 上下文里 apply 并注册 settings.section。
+ *
+ * **断言分工**（避免这里变成脆弱的源码匹配）：
+ *   - 这里只放「跨文件契约」：manifest/exports/version/locale/文档副本一致、slot 注册的形状。
+ *   - 「渲染出来长什么样」交给 test/render.mjs（真执行组件）；
+ *     「请求链/错误分支」交给 test/fetch-chain.mjs；「挂载幂等」交给 test/mount-guard.mjs。
+ *   - 因此不要在这里新增 `clientSource.includes('...')` 这类实现细节断言：
+ *     改个变量名就误报，而真正的行为回归它也抓不到。
+ *
+ * 运行：node test/static.mjs
+ * 需要真实 Cordis 的集成测试见 test/smoke.mjs（需先准备 test/deps）。
+ */
+import { existsSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { loadClient } from './client-harness.mjs'
+
+const checks = []
+function check(name, condition, detail) {
+  checks.push({ name, ok: Boolean(condition), detail })
+  console.log(`${condition ? 'ok  ' : 'FAIL'} - ${name}${condition || detail === undefined ? '' : ` (${detail})`}`)
+}
+
+const plugin = await import(new URL('../index.js', import.meta.url).href)
+const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+
+// ── 1b. DSH STORE manifest 契约（兼容性声明 / 生命周期脚本 / 分发文件）──────
+check('manifest 声明 engines.node', typeof manifest.engines?.node === 'string' && manifest.engines.node.trim() !== '', JSON.stringify(manifest.engines))
+check('manifest 声明 engines.dsh（DSH 兼容范围）', typeof manifest.engines?.dsh === 'string' && manifest.engines.dsh.trim() !== '', JSON.stringify(manifest.engines))
+const releases = manifest.dsh?.compatibility?.dshReleases
+check(
+  'manifest 声明 dsh.compatibility.dshReleases（逐版本精确记录）',
+  releases && typeof releases === 'object' && Object.values(releases).every((value) => ['compatible', 'unknown', 'failed'].includes(value)),
+  JSON.stringify(releases),
+)
+check(
+  'manifest 未声明安装生命周期脚本',
+  !manifest.scripts || !Object.keys(manifest.scripts).some((name) => ['preinstall', 'install', 'postinstall', 'prepare'].includes(name)),
+  JSON.stringify(manifest.scripts ?? null),
+)
+// 不发布 npm 包：不再声明 `files`；改为断言运行文件在仓库里真实存在（分发靠 GitHub 子目录 + 市场）。
+check(
+  'repository 里存在全部运行文件',
+  ['index.js', 'control.js', 'state.js', 'metrics.js', 'persist.js', 'profile.js', 'scaffold.js', 'client.js', 'dsh.bundle.patch.yml'].every((file) => existsSync(new URL(`../${file}`, import.meta.url))),
+  ['index.js', 'control.js', 'state.js', 'metrics.js', 'persist.js', 'profile.js', 'scaffold.js', 'client.js', 'dsh.bundle.patch.yml'].filter((file) => !existsSync(new URL(`../${file}`, import.meta.url))),
+)
+check('manifest 无 npm 运行依赖（只依赖宿主服务与 Node 内置模块）', !manifest.dependencies || Object.keys(manifest.dependencies).length === 0, JSON.stringify(manifest.dependencies ?? {}))
+check('不声明 npm 打包清单（不再发布 npm）', manifest.files === undefined, JSON.stringify(manifest.files ?? null))
+check('仓库保留权限说明文档', existsSync(new URL('../PERMISSIONS.md', import.meta.url)))
+check('lint 脚本存在且用 oxlint（devDependency）', String(manifest.scripts?.lint ?? '').includes('oxlint') && Boolean(manifest.devDependencies?.oxlint), JSON.stringify({ lint: manifest.scripts?.lint, dev: manifest.devDependencies }))
+check('oxlint 配置随仓库提交', existsSync(new URL('../.oxlintrc.json', import.meta.url)))
+check('npm ci 用的 lockfile 存在', existsSync(new URL('../package-lock.json', import.meta.url)))
+
+// ── 1c. 版本号副本一致（scripts/bump-version.mjs 负责同步）───────────────
+const rootReadme = readFileSync(new URL('../../README.md', import.meta.url), 'utf8')
+const pluginReadme = readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+const implementationDoc = readFileSync(new URL('../docs/IMPLEMENTATION.md', import.meta.url), 'utf8')
+check('根 README 的当前版本与 package.json 一致', rootReadme.includes('当前版本：`' + manifest.version + '`'), manifest.version)
+check('插件 README 的当前版本与 package.json 一致', pluginReadme.includes('当前版本：`' + manifest.version + '`'), manifest.version)
+check('IMPLEMENTATION 的当前版本与 package.json 一致', implementationDoc.includes('当前版本：`' + manifest.version + '`'), manifest.version)
+
+// ── 1. 插件导出形状 ────────────────────────────────────────────────────────
+check('exports name 是字符串', typeof plugin.name === 'string' && plugin.name.length > 0, plugin.name)
+check('exports inject 是字符串数组', Array.isArray(plugin.inject) && plugin.inject.every((value) => typeof value === 'string'), JSON.stringify(plugin.inject))
+check('exports apply 是函数', typeof plugin.apply === 'function')
+check('exports Config 是 Standard Schema', typeof plugin.Config?.['~standard']?.validate === 'function')
+
+const validate = plugin.Config['~standard'].validate
+
+// ── 2. Config 校验（同步 Standard Schema，Cordis 的 resolveConfig 就调它）──
+const valid = validate({})
+check('空配置通过并带默认值', !valid.issues && valid.value?.contextWindowTokens === 128000 && valid.value?.warnAt === 0.75, JSON.stringify(valid))
+const wrongType = validate({ contextWindowTokens: '200000' })
+check('类型错误被拒绝', Array.isArray(wrongType.issues) && wrongType.issues.length > 0, JSON.stringify(wrongType.issues))
+const unknown = validate({ nope: 1 })
+check('未知配置键被拒绝', Array.isArray(unknown.issues) && unknown.issues.some((issue) => issue.path?.join('.') === 'nope'), JSON.stringify(unknown.issues))
+const inverted = validate({ warnAt: 0.95, errorAt: 0.9 })
+check('warnAt >= errorAt 被拒绝', Array.isArray(inverted.issues) && inverted.issues.length > 0, JSON.stringify(inverted.issues))
+const triggerValid = validate({ triggerAt: 0.75 })
+check('triggerAt 接受 (0, 1] 内的值', !triggerValid.issues && triggerValid.value?.triggerAt === 0.75, JSON.stringify(triggerValid))
+const triggerInvalid = validate({ triggerAt: 1.5 })
+check('triggerAt 超出 (0, 1] 被拒绝', Array.isArray(triggerInvalid.issues) && triggerInvalid.issues.length > 0, JSON.stringify(triggerInvalid.issues))
+const targetDefault = validate({})
+check('targetAt 默认 0.6', targetDefault.value?.targetAt === 0.6, JSON.stringify(targetDefault.value?.targetAt))
+const targetInvalid = validate({ targetAt: 1 })
+check('targetAt 必须小于 1', Array.isArray(targetInvalid.issues) && targetInvalid.issues.length > 0, JSON.stringify(targetInvalid.issues))
+const keepTokensValid = validate({ keepTokens: 300 })
+check('keepTokens 接受非负整数', !keepTokensValid.issues && keepTokensValid.value?.keepTokens === 300, JSON.stringify(keepTokensValid))
+const keepTokensInvalid = validate({ keepTokens: -1 })
+check('keepTokens 负数被拒绝', Array.isArray(keepTokensInvalid.issues) && keepTokensInvalid.issues.length > 0, JSON.stringify(keepTokensInvalid.issues))
+
+// 节假日可配置：跨年只需补日期，不必改代码发版。
+const holidaysValid = validate({ holidays: ['2027-01-01', '2027-01-02', '2027-01-01'] })
+check('holidays 接受 YYYY-MM-DD 数组并去重排序', !holidaysValid.issues && JSON.stringify(holidaysValid.value?.holidays) === JSON.stringify(['2027-01-01', '2027-01-02']), JSON.stringify(holidaysValid.value?.holidays))
+const holidaysBadFormat = validate({ holidays: ['2027/01/01'] })
+check('holidays 拒绝非 YYYY-MM-DD 格式', Array.isArray(holidaysBadFormat.issues) && holidaysBadFormat.issues.length > 0, JSON.stringify(holidaysBadFormat.issues))
+const holidaysNotArray = validate({ holidays: '2027-01-01' })
+check('holidays 非数组被拒绝', Array.isArray(holidaysNotArray.issues) && holidaysNotArray.issues.length > 0, JSON.stringify(holidaysNotArray.issues))
+const holidaysIgnore = validate({ holidaysIgnoreBuiltin: true })
+check('holidaysIgnoreBuiltin 接受布尔值', !holidaysIgnore.issues && holidaysIgnore.value?.holidaysIgnoreBuiltin === true, JSON.stringify(holidaysIgnore))
+const holidaysIgnoreBad = validate({ holidaysIgnoreBuiltin: 'yes' })
+check('holidaysIgnoreBuiltin 非布尔被拒绝', Array.isArray(holidaysIgnoreBad.issues) && holidaysIgnoreBad.issues.length > 0, JSON.stringify(holidaysIgnoreBad.issues))
+const extraValid = validate({ extraPrompts: { 'project-rules': 'extra text' } })
+check('extraPrompts 接受 name -> text', !extraValid.issues && extraValid.value?.extraPrompts?.['project-rules'] === 'extra text', JSON.stringify(extraValid))
+const extraInvalid = validate({ extraPrompts: [] })
+check('extraPrompts 拒绝数组', Array.isArray(extraInvalid.issues) && extraInvalid.issues.length > 0, JSON.stringify(extraInvalid.issues))
+const placementValid = validate({ extraPrompts: { 'project-rules': 'extra text' }, extraPromptPlacements: { 'project-rules': 'user' } })
+check('extraPromptPlacements 接受 user', !placementValid.issues && placementValid.value?.extraPromptPlacements?.['project-rules'] === 'user', JSON.stringify(placementValid))
+const placementInvalid = validate({ extraPromptPlacements: { 'project-rules': 'bad' } })
+check('extraPromptPlacements 拒绝非法位置', Array.isArray(placementInvalid.issues) && placementInvalid.issues.length > 0, JSON.stringify(placementInvalid.issues))
+const targetAboveTrigger = validate({ triggerAt: 0.8, targetAt: 0.9 })
+check('targetAt >= triggerAt 被拒绝', Array.isArray(targetAboveTrigger.issues) && targetAboveTrigger.issues.length > 0, JSON.stringify(targetAboveTrigger.issues))
+
+// ── 3. 包资源解析（宿主 readPluginMeta / client-modules 都走 ESM 解析器）──
+const require = createRequire(new URL('../package.json', import.meta.url))
+for (const specifier of ['agent-embodiment/client', 'agent-embodiment/control', 'agent-embodiment/icon', 'agent-embodiment/locale/en.json', 'agent-embodiment/locale/zh.json']) {
+  let resolved
+  try {
+    resolved = require.resolve(specifier)
+  } catch (error) {
+    check(`exports 可解析 ${specifier}`, false, error.code)
+    continue
+  }
+  check(`exports 可解析 ${specifier}`, existsSync(resolved), resolved)
+}
+
+for (const language of ['en', 'zh']) {
+  let meta
+  try {
+    meta = JSON.parse(readFileSync(new URL(`../locale/${language}.json`, import.meta.url), 'utf8')).meta
+  } catch (error) {
+    check(`locale/${language}.json 合法`, false, String(error))
+    continue
+  }
+  check(`locale/${language}.json 有 meta.title/description`, typeof meta?.title === 'string' && meta.title.trim() !== '' && typeof meta?.description === 'string' && meta.description.trim() !== '', JSON.stringify(meta))
+}
+
+// ── 3b. 控制半侧（preset 平面）——零依赖 ESM，可直接 import 验证形状 ──
+const control = await import(new URL('../control.js', import.meta.url))
+check(
+  'control 导出 name/inject/Config/apply',
+  control.name === 'agent-embodiment-control' &&
+    control.inject?.join(',') === 'tokenMeter' &&
+    typeof control.Config?.['~standard']?.validate === 'function' &&
+    typeof control.apply === 'function',
+  `${control.name} / ${control.inject}`,
+)
+const controlValidate = control.Config['~standard'].validate
+const controlDefault = controlValidate({})
+check(
+  'control 默认配置带默认值',
+  !controlDefault.issues && controlDefault.value?.mode === 'idle' && controlDefault.value?.maxContextTokens === 0 && controlDefault.value?.maxAttempts === 2,
+  JSON.stringify(controlDefault),
+)
+const controlBadMode = controlValidate({ mode: 'nope' })
+check('control 非法 mode 被拒绝', Array.isArray(controlBadMode.issues) && controlBadMode.issues.some((issue) => issue.path?.join('.') === 'mode'), JSON.stringify(controlBadMode.issues))
+const controlBadBudget = controlValidate({ maxContextTokens: -1 })
+check('control 负上下文被拒绝', Array.isArray(controlBadBudget.issues) && controlBadBudget.issues.some((issue) => issue.path?.join('.') === 'maxContextTokens'), JSON.stringify(controlBadBudget.issues))
+const controlBadAttempts = controlValidate({ maxAttempts: 0 })
+check('control maxAttempts 越界被拒绝', Array.isArray(controlBadAttempts.issues) && controlBadAttempts.issues.some((issue) => issue.path?.join('.') === 'maxAttempts'), JSON.stringify(controlBadAttempts.issues))
+const controlBadKey = controlValidate({ nope: 1 })
+check('control 未知配置键被拒绝', Array.isArray(controlBadKey.issues) && controlBadKey.issues.length > 0, JSON.stringify(controlBadKey.issues))
+
+// ── 4. manifest 与 bundle patch 结构 ───────────────────────────────────────
+check('dsh.client 声明合法', manifest.dsh?.client?.platform === 'web' && typeof manifest.dsh.client.immediately === 'boolean' && Array.isArray(manifest.dsh.client.inject), JSON.stringify(manifest.dsh?.client))
+check('dsh.bundle.patch 指向存在的文件', existsSync(new URL(`../${manifest.dsh?.bundle?.patch ?? 'missing'}`, import.meta.url)))
+const patch = readFileSync(new URL('../dsh.bundle.patch.yml', import.meta.url), 'utf8')
+check('bundle patch 含 insert 层', /^- insert:/m.test(patch))
+check('bundle patch 插入 id/name', /- id: agent-embodiment\s*\n\s*name: agent-embodiment/.test(patch))
+const icon = readFileSync(new URL('../icon.svg', import.meta.url), 'utf8')
+check('icon.svg 是 SVG 且体积极小', icon.trimStart().startsWith('<svg') && Buffer.byteLength(icon) <= 256 * 1024, `${Buffer.byteLength(icon)}B`)
+
+// ── 5. 浏览器半侧：mock __ModuleLoader__ + cordis 上下文 ───────────────────
+const clientSource = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
+const metricsSource = readFileSync(new URL('../metrics.js', import.meta.url), 'utf8')
+const indexSource = readFileSync(new URL('../index.js', import.meta.url), 'utf8')
+const scaffoldRoutesSource = readFileSync(new URL('../routes-scaffold.js', import.meta.url), 'utf8')
+const analyticsSource = readFileSync(new URL('../analytics.js', import.meta.url), 'utf8')
+const statusRoutesSource = readFileSync(new URL('../routes-status.js', import.meta.url), 'utf8')
+const controlSource = readFileSync(new URL('../control.js', import.meta.url), 'utf8')
+const inventoryRoutesSource = readFileSync(new URL('../routes-inventory.js', import.meta.url), 'utf8')
+check('client.js 语法可编译', (() => {
+  try {
+    new Function(clientSource)
+    return true
+  } catch {
+    return false
+  }
+})())
+const client = (() => {
+  const loaded = loadClient(clientSource, {
+    onConfigForms: () => checks.push({ name: '不再使用 configForms（改为宿主配置路由）', ok: false, detail: 'unexpected call' }),
+  })
+  check('client.js 通过 __ModuleLoader__.load 注册', typeof loaded.registration?.factory === 'function', loaded.registration?.id)
+  return loaded
+})()
+check('client exports inject', client.moduleExports.inject?.join(',') === 'slots,locale', JSON.stringify(client.moduleExports.inject))
+for (const inject of client.slotInjects) inject.callback()
+
+const bySlot = (name) => client.slotRegistrations.find((entry) => entry.definition.name === name) ?? {}
+const section = bySlot('settings.section').definition ?? {}
+check('client 注册 settings.section', section.name === 'settings.section', JSON.stringify(section))
+check('settings.section id/order/locale', section.id === 'agent-embodiment' && typeof section.order === 'number' && section.locale === 'agentEmbodiment', JSON.stringify(section))
+check('settings.section label 走中文词典', section.label?.() === '上下文', section.label?.())
+check('settings.section 组件是函数', typeof bySlot('settings.section').component === 'function', typeof bySlot('settings.section').component)
+
+const mainEntry = bySlot('main').definition ?? {}
+check('client 注册 main 整页', mainEntry.name === 'main' && mainEntry.key === 'embody', JSON.stringify(mainEntry))
+check('main 页组件是函数', typeof bySlot('main').component === 'function', typeof bySlot('main').component)
+
+const panelEntry = bySlot('sidebar.panellist').definition ?? {}
+check('client 注册 sidebar.panellist', panelEntry.name === 'sidebar.panellist' && panelEntry.id === 'embody', JSON.stringify(panelEntry))
+check('sidebar.panellist 标题是上下文', panelEntry.label?.() === '上下文', panelEntry.label?.())
+const dockEntry = bySlot('conversation.composer.dock').definition ?? {}
+check('client 注册 composer dock 指示器', dockEntry.name === 'conversation.composer.dock' && dockEntry.id === 'embody-usage', JSON.stringify(dockEntry))
+check('dock 指示器组件是函数', typeof bySlot('conversation.composer.dock').component === 'function', typeof bySlot('conversation.composer.dock').component)
+const balanceEntry = client.slotRegistrations.find((entry) => entry.definition.id === 'embody-balance')?.definition ?? {}
+check('client 注册 DSH 余额 dock 胶囊', balanceEntry.name === 'conversation.composer.dock' && balanceEntry.order > dockEntry.order, JSON.stringify(balanceEntry))
+check('余额胶囊使用 data-embodiment-balance 标记', clientSource.includes("'data-embodiment-balance': '1'"))
+check('余额弹层使用 data-embodiment-balance-panel 标记', clientSource.includes("'data-embodiment-balance-panel': '1'"))
+check('余额胶囊默认关闭、开关可持久化', clientSource.includes("agent-embodiment:balance-enabled:v1") && clientSource.includes("'data-embodiment-balance-toggle': '1'"))
+check('余额视图区分 status:failed（不再一直显示加载中）', clientSource.includes("value.status === 'failed'"))
+check('余额视图带充值入口与平台链接', clientSource.includes('links.topUpUrl') && clientSource.includes('links.usageUrl'))
+check('余额重读有最小间隔', clientSource.includes('BALANCE_READ_MIN_MS = 30000'))
+check('提示词来源从 inventory.sources 读（曾错读顶层 sources 而恒显示未识别）', clientSource.includes('data.inventory && data.inventory.sources'))
+check('新增提示词提供内置模板入口', clientSource.includes("'data-embodiment-extra-template'") && clientSource.includes('data.promptTemplates'))
+check('sidebar.panellist 图标组件是函数', typeof bySlot('sidebar.panellist').component === 'function', typeof bySlot('sidebar.panellist').component)
+
+const stateModule = await import(new URL('../state.js', import.meta.url).href)
+check('state 导出压缩记录接口', ['recordCompactionEvent', 'listCompactionLog', 'hydrateCompactionLog', 'subscribeCompactionLog'].every((name) => typeof stateModule[name] === 'function'))
+check('压缩记录只在事件页展示，设置页不重复', !clientSource.includes('data-embodiment-compact-log') && clientSource.includes('data-embodiment-events') && clientSource.includes("t('eventsTitle')"))
+check('client API 路径相对 document.baseURI 解析（兼容反代前缀）', clientSource.includes('document.baseURI') && clientSource.includes("new URL('api/agent-embodiment/status'"), null)
+const clientVersion = clientSource.match(/CLIENT_VERSION\s*=\s*'([^']+)'/)?.[1]
+check('client CLIENT_VERSION 与 package.json 一致', clientVersion === manifest.version, `${clientVersion} vs ${manifest.version}`)
+check('client 宿主/客户端版本不一致时提示刷新页面', clientSource.includes('data-embodiment-version-mismatch') && clientSource.includes('data-embodiment-reload') && clientSource.includes('CLIENT_VERSION'))
+check('client 把脚手架降级到设置页 Labs 且不再占顶层 tab', clientSource.includes('data-embodiment-labs') && !clientSource.includes("tab === 'scaffold'") && clientSource.includes('ScaffoldPanel'))
+check('client 脚手架面板调用宿主路由', clientSource.includes('/scaffold/templates') && clientSource.includes("post('preview'") && clientSource.includes("post('generate'"))
+check('client 脚手架支持 MCP/AGENTS 选项', clientSource.includes('data-embodiment-scaffold-mcp') && clientSource.includes('writeAgents'))
+check('client 暴露压缩策略选择', clientSource.includes('data-embodiment-strategy') && clientSource.includes('compressionStrategy'))
+check('client 在 control 未挂载时给出提示', clientSource.includes('data-embodiment-control-required') && clientSource.includes('controlRequired'))
+check('趋势图有纵轴、预算线与压缩标记', clientSource.includes('niceAxisMax') && clientSource.includes('trendBudgetLabel') && clientSource.includes('trendMarkerDot'))
+check('头部摘要与趋势请求数走本地化单位', clientSource.includes('data-embodiment-header-status') && clientSource.includes("t('requestsUnit')"))
+check('内置 DeepSeek 官方人民币峰谷价', metricsSource.includes('DeepSeek V4.1 Flash') && metricsSource.includes('offPeak') && metricsSource.includes('isPeakTime'))
+check('状态接口暴露价目与峰谷时段', statusRoutesSource.includes('pricing:') && statusRoutesSource.includes('pricingMeta') && statusRoutesSource.includes('peakNow'))
+check('状态缓存条件（fresh / revision / TTL）在 routes-status.js', statusRoutesSource.includes("searchParams.get('fresh') !== '1'") && statusRoutesSource.includes('cached.revision === runtime.getStatusRevision()') && statusRoutesSource.includes('statusCacheMs') && indexSource.includes('createStatusRoutes({'))
+check('导出仍是 JSON/CSV 双格式且带 filename', statusRoutesSource.includes("format === 'csv'") && statusRoutesSource.includes('content-disposition') && statusRoutesSource.includes('csvDocument'))
+check('面板有计费卡并显示人民币费用', clientSource.includes('data-embodiment-billing') && clientSource.includes('formatCost') && clientSource.includes("t('billingTitle')"))
+check('会话切换丢弃旧响应并清空历史选择', clientSource.includes('lastPathRef') && clientSource.includes('setSelected(null)') && clientSource.includes('sessionRef.current !== requestedSession') && clientSource.includes('detailSession || activeSession'))
+check('头部合并上下文构成、概览去掉重复图表与费用 KPI', clientSource.includes('headerCategories') && clientSource.includes('h(SegmentedBar') && clientSource.includes('h(LegendGrid') && !clientSource.includes('data-embodiment-heatmap') && !clientSource.includes('kpiCost'))
+check('打开会话优先用 uiWorkspace.openSession', clientSource.includes("ctx.inject(['uiWorkspace']") && clientSource.includes('workspaceService.openSession') && clientSource.includes('role="treeitem"'))
+check('跨会话分析显式按活动时间排序', analyticsSource.includes('sessionsNewestFirst') && analyticsSource.includes('const picked = list.slice(0, limit)') && indexSource.includes('sessionsNewestFirst(RUNTIME.getSessions().list())'))
+check('提示词装配使用 prompt-assembly.js', controlSource.includes('buildAssembledSections({') && !controlSource.includes('const inventory = []') && !controlSource.includes('recordInventory(sessionId, {\n            sections: inventory'))
+check('analytics 编排与缓存已外置到 analytics.js', analyticsSource.includes('export function createAnalytics') && analyticsSource.includes('ANALYTICS_CACHE_TTL_MS') && indexSource.includes('createAnalytics({') && !indexSource.includes('const analyticsPayload = async'))
+check('服务句柄统一经 runtime 访问（不再有裸闭包变量）', !/ctx\.inject\(\['[^']*RUNTIME/u.test(indexSource) && indexSource.includes('RUNTIME.getConfigEditor()') && indexSource.includes('RUNTIME.setWebServerPresent(true)'))
+check('自动挂载只改已知 preset 并保留控制行配置', indexSource.includes('findKnownPresetEntry') && indexSource.includes('auto-mount skipped: no known agent preset id') && indexSource.includes('config: existingControl.config ?? CONTROL_ROW.config'))
+check('全局工具重置同步共享状态', inventoryRoutesSource.includes('setGlobalDisabledTools(next)') && inventoryRoutesSource.includes('setGlobalDisabledTools([])'))
+check('inventory 路由已外置到 routes-inventory.js', indexSource.includes('createInventoryRoutes({') && !indexSource.includes('const inventoryHandler = (request, response)'))
+check('Windows 脚手架路径拒绝盘符根与系统目录', scaffoldRoutesSource.includes('dirname(root) === root') && scaffoldRoutesSource.includes('SystemRoot') && scaffoldRoutesSource.includes('ProgramFiles'))
+check('脚手架路由从 index.js 抽出并以工厂注入', scaffoldRoutesSource.includes('export function createScaffoldRoutes') && indexSource.includes('createScaffoldRoutes({') && !indexSource.includes('function isProtectedScaffoldPath'))
+check('成本标签统一标注估算', clientSource.includes('costEstimateLabel') && clientSource.includes("t('costEstimateLabel')"))
+check('恢复全部提示包含会话提示词文本覆盖', clientSource.includes('session prompt text') && clientSource.includes('会话提示词文本覆盖'))
+check('scaffold 中英文词典齐全', Boolean(client.dictionaries.agentEmbodiment?.en?.scaffoldTitle) && Boolean(client.dictionaries.agentEmbodiment?.zh?.scaffoldTitle))
+
+// 同一个 window 下加载两次：第二次 apply 必须被挂载守卫挡住，不能重复注册槽位。
+const sharedScope = {}
+const firstMount = loadClient(clientSource, { scope: sharedScope })
+const secondMount = loadClient(clientSource, { scope: sharedScope })
+for (const inject of firstMount.slotInjects) inject.callback()
+for (const inject of secondMount.slotInjects) inject.callback()
+// UI-PROPOSAL 里登记的组件必须真的存在于 client.js（双向核对，防止文档漂移）
+{
+  const proposal = readFileSync(new URL('../docs/UI-PROPOSAL.md', import.meta.url), 'utf8')
+  const documented = new Set()
+  for (const line of proposal.split('\n')) {
+    if (!line.startsWith('|')) continue
+    const first = line.split('|')[1] || ''
+    const match = /`([A-Z][A-Za-z]+)`/u.exec(first.trim())
+    if (match) documented.add(match[1])
+  }
+  const missingInCode = [...documented].filter((name) => !new RegExp(`function ${name}\\(`, 'u').test(clientSource))
+  check('UI-PROPOSAL 登记的组件都存在于 client.js', documented.size >= 8 && missingInCode.length === 0, { documented: documented.size, missingInCode })
+}
+
+// 行内样式表达不了 :focus-visible 与 media query，这两项靠注入 <style> 实现。
+// 断言它们真的进了产物，且作用域只匹配本插件自己的属性标记。
+{
+  check('插件注入键盘焦点环', clientSource.includes('agent-embodiment-focus-ring') && clientSource.includes(':focus-visible'))
+  check('焦点环作用域限定本插件元素', clientSource.includes('[data-embodiment-panel],[data-embodiment-dock],[data-embodiment-balance]'))
+  check('尊重 prefers-reduced-motion', clientSource.includes('prefers-reduced-motion: reduce') && clientSource.includes('agent-embodiment-reduced-motion'))
+  check('两段 <style> 都在 dispose 时移除', (clientSource.match(/\.remove\(\)/gu) || []).length >= 2)
+}
+
+// 技能读取（只读）必须真的挂上：注入 skills 服务 + 注册两条 GET 路由。
+{
+  check('技能服务以 ctx.inject([skills]) 注入', indexSource.includes("ctx.inject(['skills'],"))
+  check('技能路由已注册', indexSource.includes('/skills`') && indexSource.includes('/skills/body`'))
+  check('技能路由全部套 authed', /server\.register\(\{ kind: 'exact', path: `\$\{STATUS_PATH\}\/(skills|skills\/body)`, handler: authed\(/u.test(indexSource))
+  check('技能模块不写盘（只读）', !/writeFileSync|mkdirSync|unlinkSync/u.test(readFileSync(new URL('../routes-skills.js', import.meta.url), 'utf8')))
+}
+
+// 技能卡片的标记在 render.mjs 里有行为级断言；这里再锁一层源码，防止片段被误删。
+{
+  check('技能卡片按来源分组', clientSource.includes("'data-embodiment-skill-group'"))
+  check('技能卡片提供筛选框', clientSource.includes("'data-embodiment-skill-search'"))
+  check('技能卡片提供复制路径', clientSource.includes("'data-embodiment-skill-copy'"))
+  check('scope 未生效时提示可能不全', clientSource.includes('skillsGlobalOnly'))
+  check('复制走 clipboard 且失败静默', clientSource.includes('navigator.clipboard.writeText') && clientSource.includes('.catch(() => {})'))
+}
+
+check('client 重复挂载只注册一次', firstMount.slotRegistrations.length === 5 && secondMount.slotRegistrations.length === 0, `${firstMount.slotRegistrations.length}/${secondMount.slotRegistrations.length}`)
+
+const failed = checks.filter((entry) => !entry.ok)
+console.log(`\n[static] ${checks.length - failed.length}/${checks.length} 项通过`)
+if (failed.length > 0) {
+  console.error(`[static] 失败项：${failed.map((entry) => entry.name).join('；')}`)
+  process.exit(1)
+}

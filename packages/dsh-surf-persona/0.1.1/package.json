@@ -1,0 +1,35 @@
+{
+  "name": "dsh-surf-persona",
+  "version": "0.1.1",
+  "description": "把 B站冲浪会话的身份/人设放进 system prompt：会话建好时注入一次，不再每次唤醒都塞进 user 消息。",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "persona"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  },
+  "author": "Nyarlice",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nyarlice/one-her.git"
+  }
+}

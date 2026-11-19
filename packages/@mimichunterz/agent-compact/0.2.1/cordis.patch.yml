@@ -1,0 +1,17 @@
+# @mimichunterz/agent-compact bundle 层：在主机层注册上下文压缩工具（每个会话可见）。
+# 安装：dsh plugin --profile web add @mimichunterz/agent-compact
+#
+# 可选配置：
+#   config:
+#     autoArchive: true
+#
+# 该工具把 agent 编写的检查点交给主机压缩引擎；自动压缩与 /compact 保持官方行为。
+- insert:
+    - id: tool-context-compression
+      name: '@mimichunterz/agent-compact'
+
+# 原始区间归档的持久 spill 根目录（$DSH_HOME/spill/...）；官方默认是进程级
+# 临时目录。bundle 层先于 profile 的 cordis.patch.yml 应用，部署方仍可覆盖。
+- id: spill-local
+  config:
+    root: !!js dshHomePath('spill')

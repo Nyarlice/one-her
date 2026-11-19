@@ -1,0 +1,4 @@
+﻿# 凭据永远不进库
+credentials.json
+*.cookie
+.env

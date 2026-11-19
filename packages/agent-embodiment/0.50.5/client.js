@@ -1,0 +1,4665 @@
+/**
+ * agent-embodiment — 浏览器半侧
+ *
+ * 三个挂载点共用一套视觉：
+ *   1. conversation.composer.dock —— 输入框下方，与 DSH 内置 ContextMeter 同一排版
+ *   2. main (key = 'embody')         —— 左侧导航整页
+ *   3. settings.section           —— 设置 → 智能体具身
+ *
+ * 视觉参考：DSH 自带 ContextMeter 的 trigger/panel 尺寸与颜色 token；
+ * 面板卡片布局参考 dsh-context 插件（lc-card / lc-card-title / lc-chip 的信息密度），
+ * 但全部用内联样式 + --dsw-alias-* token 实现，不引入 CSS 文件、不依赖 Tailwind。
+ */
+window.__ModuleLoader__.load({
+  id: 'agent-embodiment',
+  factory: (require) => {
+    var module = { exports: {} }
+    var exports = module.exports
+    Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' })
+
+    const react = require('react')
+
+    const NS = 'agentEmbodiment'
+    /** 与 package.json 版本保持一致；宿主版本不同时提示刷新页面而不是重启 DSH。 */
+    const CLIENT_VERSION = '0.50.5'
+    /**
+     * API 路径必须相对页面 base 解析，而不是写死根路径：
+     * 反向代理部署在 /app/dsh/ 这类前缀下时，根路径 /api/... 会打到网关根并 404。
+     * 没有 document 的测试/SSR 环境退回根路径。
+     */
+    const STATUS_PATH = (() => {
+      try {
+        if (typeof document === 'undefined' || typeof document.baseURI !== 'string') return '/api/agent-embodiment/status'
+        const base = new URL(document.baseURI)
+        if (!base.pathname.endsWith('/')) {
+          const last = base.pathname.slice(base.pathname.lastIndexOf('/') + 1)
+          if (last.includes('.')) base.pathname = base.pathname.slice(0, base.pathname.lastIndexOf('/') + 1)
+          else base.pathname += '/'
+        }
+        return new URL('api/agent-embodiment/status', base).pathname
+      } catch {
+        return '/api/agent-embodiment/status'
+      }
+    })()
+    const PANEL_ID = 'embody'
+    const CONFIG_NAMESPACE = 'agent-embodiment'
+
+    const en = {
+      nav: 'Context',
+      panel: 'Context',
+      title: 'Context',
+      pageTitle: 'Context',
+      versionLabel: 'Plugin version',
+      reloadUi: 'Reload page',
+      reloadHint: 'The plugin was updated; reload the page to load the new UI (no DSH restart needed).',
+      description: 'See where context goes, control compaction and tools, and keep the agent preset healthy.',
+      budgetLimit: 'Budget cap',
+      used: 'Measured',
+      remaining: 'Remaining',
+      ratio: 'Used',
+      pluginBudgetTag: 'plugin budget',
+      statusOk: 'ok',
+      statusWarn: 'warning',
+      statusError: 'over the context limit',
+      warnAt: 'Warn at',
+      errorAt: 'Error at',
+      compressionStrategy: 'Compression strategy',
+      strategyConservative: 'Conservative — compress at 90%, keep more',
+      strategyBalanced: 'Balanced — pre-compress at 90%, keep 25%',
+      strategyAggressive: 'Aggressive — early compression, keep 10%',
+      triggerLabel: 'Trigger ratio',
+      invalidTrigger: 'Trigger ratio must be in (0, 1].',
+      triggerHint: 'Auto-compaction triggers when usage reaches this share of the budget (1 = only at the limit; 0.75 = pre-compress at the warn ratio).',
+      targetLabel: 'Target ratio',
+      invalidTarget: 'Target ratio must be in (0, 1) and below the trigger ratio.',
+      invalidAnalyticsLimit: 'Analytics session limit must be an integer from 1 to 200.',
+      compacting: 'Compacting…',
+      compactingHint: 'Compaction is running; the next request may wait a moment.',
+      refresh: 'Refresh',
+      collapse: 'Collapse',
+      expand: 'Expand',
+      retry: 'Retry',
+      loading: 'Loading…',
+      error: 'Could not load status',
+      errorUnauthorized: 'This session is no longer authenticated. Refresh the page or sign in again.',
+      errorForbidden: 'This session cannot access the plugin API. Refresh the page or check the token.',
+      errorUnavailable: 'The plugin service is temporarily unavailable. Try again in a moment.',
+      errorNetwork: 'Could not reach the plugin. Check that the DSH instance is still running.',
+      cardFailed: 'This card failed to render: {message}',
+      tokens: 'tokens',
+      control: 'Control',
+      controlOn: 'enabled',
+      controlOff: 'not active',
+      controlReady: 'Control row is mounted in the agent preset; the context limit is enforced automatically.',
+      controlMissing: 'Not active yet — mount agent-embodiment/control inside the agent preset (Settings → Agent preset → compaction group).',
+      controlRequired: 'Prompt and tool changes need the control row. Mount agent-embodiment/control in the agent preset first.',
+      controlLast: 'Last compaction',
+      controlEnable: 'Enable auto-compaction (writes the agent preset)',
+      controlDisable: 'Disable auto-compaction (removes the preset row)',
+      controlPresetHint: 'Writes one row into preset-standard; the preset config becomes a profile override.',
+      controlBusy: 'Applying…',
+      controlWriteFailed: 'Could not update the agent preset',
+      controlEnabled: 'Auto-compaction is now enforced with this context limit.',
+      controlError: 'Last compaction issue',
+      controlDisabled: 'Auto-compaction row removed from the agent preset.',
+      configTitle: 'Global configuration',
+      configHint: 'Writes to the profile’s config row; the plugin reloads with the new values.',
+      analyticsLimitLabel: 'Analytics session limit',
+      analyticsLimitHint: 'How many recent sessions Trend/Overview scan (1–200; default 40).',
+      configUnavailable: 'This client cannot edit the Host configuration — values are read-only here.',
+      save: 'Save',
+      saving: 'Saving…',
+      saved: 'Saved. The plugin reloaded with the new configuration.',
+      saveRefused: 'The Host refused the write.',
+      saveFailed: 'Save failed',
+      invalidTokens: 'Context limit must be a positive integer.',
+      invalidRatios: 'Thresholds must be in (0, 1] and warn must be below error.',
+      defaultBudgetShort: 'Default limit',
+      warnLabel: 'Warn ratio',
+      errorLabel: 'Error ratio',
+      pluginContext: 'Plugin context',
+      pluginContextAria: 'Plugin context {percent} used',
+      pluginContextHint: 'The percentage uses the plugin budget for this session; the built-in meter uses the model window.',
+      balance: 'Balance',
+      balanceTopped: 'Topped up',
+      balanceBonus: 'Granted',
+      balanceSignedOut: 'Sign in to view the balance',
+      balanceUnavailable: 'Balance unavailable',
+      balanceCheckPlatform: 'View on the platform',
+      balanceTopUp: 'Top up',
+      balanceRefresh: 'DSH account balance; click to refresh',
+      balanceLoading: 'Loading balance…',
+      balanceToggleTitle: 'Balance capsule',
+      balanceToggleHint: 'Off by default. Your choice is saved locally and restored after restarting DSH.',
+      balanceEnable: 'Enable',
+      balanceDisable: 'Disable',
+      inventoryTitle: 'Tools & prompt sections',
+      inventoryTools: 'Tools',
+      inventoryPrompts: 'Prompt sections',
+      inventoryEmpty: 'No request yet in this session. Send one message, then reopen this page.',
+      inventoryRisk: 'Disabling removes the item from the next request. The model may behave unexpectedly; you can restore everything here.',
+      onlyEnabled: 'Enabled only',
+      noneEnabled: 'No enabled items.',
+      inventoryLoadFailed: 'Could not load tools / prompt sections',
+      openPanel: 'Open full panel',
+      sessionSwitch: 'session',
+      globalSwitch: 'global',
+      confirm: 'Confirm',
+      cancel: 'Cancel',
+      restoreAll: 'Restore all',
+      restoreConfirm: 'Clears session toggles and session prompt text, global prompt edits and global tool disables. Continue?',
+      tokensShort: 'tokens',
+      copy: 'Copy',
+      copied: 'Copied',
+      parameters: 'Parameters (JSON Schema)',
+      source: 'Source',
+      sourceUnknown: 'unidentified',
+      edit: 'Edit',
+      resetOriginal: 'Restore original',
+      globalOverridden: 'overridden (global)',
+      sessionOverridden: 'overridden (session)',
+      saveSession: 'Save to this session',
+      saveGlobal: 'Save globally',
+      savedSession: 'Saved for this session (applies to the next request).',
+      savedGlobal: 'Saved globally.',
+      confirmGlobal: 'Save globally? It affects every session and is written to the profile.',
+      resetSession: 'Reset session override',
+      editHint: 'Writes profile config (global). Original kept for restore.',
+      diffDelta: '{delta} net tokens vs current text',
+      diffNoChange: 'No changes yet.',
+      toolDisabledImpact: 'Disabled — frees about {tokens} tokens of tool schema in this session (the control row must be mounted).',
+      toolDisabledImpactUnknown: 'Disabled — this session no longer offers the tool to the agent.',
+      toolDisableWarning: 'Turning a tool off removes it from the agent this session; turn it back on to restore it.',
+      alertToggle: 'Show alert strip and dock dot',
+      alertToggleHint: 'Warnings appear when context is above the warn line or the control row is inactive.',
+      extraPromptAdd: 'Add prompt',
+      extraPromptName: 'Prompt name',
+      extraPromptText: 'Prompt text',
+      extraPromptSave: 'Add',
+      extraPromptSaved: 'Added. It appears in the next request.',
+      extraPromptHint: 'Choose where it applies; changes take effect on the next request.',
+      extraPromptPlacement: 'Append to',
+      extraPromptSystem: 'System prompt',
+      extraPromptUser: 'End of every user message',
+      extraPromptSystemBadge: 'system',
+      extraPromptUserBadge: 'per message',
+      extraPromptSwitchUser: 'Move to message end',
+      extraPromptSwitchSystem: 'Move to system prompt',
+      extraPromptDelete: 'Delete',
+      extraPromptTemplates: 'Templates',
+      extraPromptTemplateMethod: 'Working method',
+      extraPromptTemplateMethodName: 'Working method',
+      extraLabel: 'extra',
+      promptTokens: 'Prompt',
+      toolTokens: 'Tools',
+      historyTokens: 'History',
+      userTokens: 'This turn',
+      tabsOverview: 'Overview',
+      tabsTrend: 'Trend',
+      tabsEvents: 'Events',
+      tabsSettings: 'Settings',
+      tabsLabel: 'Sections',
+      scaffoldTitle: 'Agent embodiment scaffold',
+      scaffoldIntro: 'Generate a DSH agent preset with senses, hands, skills, and a verification loop.',
+      scaffoldTemplate: 'Template',
+      scaffoldTarget: 'Workspace directory',
+      scaffoldTargetHint: 'Absolute path on the DSH host. Files go under .dsh/scaffolds and .agents/skills.',
+      scaffoldName: 'Display name',
+      scaffoldSlug: 'Preset id',
+      scaffoldPreview: 'Preview',
+      scaffoldGenerate: 'Generate pack',
+      scaffoldGenerating: 'Generating…',
+      scaffoldFiles: 'Files',
+      scaffoldWarnings: 'Warnings',
+      scaffoldInstall: 'Install command',
+      scaffoldGenerated: 'Generated. Install it in the running profile, then choose the preset for a new session.',
+      scaffoldError: 'Scaffold failed',
+      scaffoldTargetRequired: 'Enter an absolute workspace path.',
+      scaffoldOverwrite: 'Overwrite existing files',
+      scaffoldAgents: 'Merge a marked section into AGENTS.md',
+      scaffoldProcessSkills: 'Include process skills (sense-environment, verify-change)',
+      scaffoldMcp: 'MCP servers (JSON, optional)',
+      scaffoldMcpHint: 'Array of { serverName, transport: "stdio"|"streamable-http", command/args/env or url/headers }. Use ${ENV_VAR} for secrets. The command will be launched locally after you install the generated preset.',
+      scaffoldMcpInvalid: 'MCP JSON is not valid JSON.',
+      scaffoldCopy: 'Copy',
+      scaffoldCopied: 'Copied',
+      scaffoldEmpty: 'Preview to see the files this preset will create.',
+      labsTitle: 'Labs: Agent scaffold',
+      skillsTitle: 'Skills',
+      skillsHint: 'Skills discovered under .dsh/skills, .agents/skills, ~/.dsh/skills and ~/.agents/skills. Read-only here: the invocation flags come from each SKILL.md frontmatter.',
+      skillsCount: '{model} of {total} reach the model',
+      skillsEmpty: 'No skills found for this workspace.',
+      skillsUnavailable: 'The skills registry is not mounted in this host.',
+      skillsIncomplete: 'Some skill providers did not finish; this list may be partial.',
+      skillsCwd: 'Scanned workspace: {cwd}',
+      skillsVia: 'source: {via}',
+      skillsSearch: 'Filter by name or description',
+      skillsNoMatch: 'No skill matches the filter.',
+      skillsCopyPath: 'Copy path',
+      skillsCopied: 'Copied',
+      skillsGlobalOnly: 'Preset scope unavailable: the host catalog may hold more skills than listed here.',
+      skillsViaRegistry: 'host registry',
+      skillsViaFilesystem: 'directory scan',
+      skillsViaRegistryEmpty: 'registry empty, scan found nothing',
+      skillsView: 'View',
+      skillsTruncated: 'Body truncated; open the file for the rest.',
+      skillsModelYes: 'model',
+      skillsModelNo: 'model off',
+      skillsUserYes: 'user',
+      skillsUserNo: 'user off',
+      skillsModelHint: 'Whether this skill is advertised to and loadable by the model.',
+      skillsUserHint: 'Whether a person can invoke this skill directly.',
+      labsHint: 'Experimental and separate from the context loop. Only repo-coder and web-researcher are validated.',
+      onboardingTitle: 'Set up context control',
+      onboardingIntro: 'Three steps, about a minute. You can skip; budget and strategy stay editable in Settings.',
+      onboardingBudget: '1. Confirm the budget',
+      onboardingBudgetHint: 'This is the plugin budget used for percentages and compaction — not the model window. Check the built-in ContextMeter for the model window.',
+      onboardingStrategy: '2. Pick a compaction strategy',
+      onboardingPreset: '3. Authorize the control row',
+      onboardingPresetHint: 'The plugin can add one row to the agent preset so compaction can run. Without it, prompt/tool controls are read-only.',
+      onboardingPresetYes: 'Allow writing the control row',
+      onboardingFinish: 'Finish setup',
+      onboardingLater: 'Later',
+      onboardingReopen: 'Reopen setup',
+      sessionBudget: 'Session budget',
+      sessionBudgetHint: 'Overrides the budget for this session only; takes precedence over the control row and host default.',
+      sessionBudgetNoSession: 'Open a session first to set its budget.',
+      sessionBudgetCurrent: 'Current override',
+      sessionBudgetSaved: 'Saved',
+      sessionBudgetFailed: 'Save failed',
+      clear: 'Clear',
+      onboardingReopenHint: 'You skipped first-run setup. You can reopen it any time.',
+      onboardingBudgetRequired: 'Confirm a positive budget first.',
+      healthTitle: 'Control health',
+      healthOk: 'All core checks pass',
+      healthIssue: 'Needs attention',
+      healthFix: 'Repair control row',
+      healthControl: 'Control row active',
+      healthPreset: 'Control row present in the agent preset',
+      healthConfig: 'Host config is editable',
+      healthBudget: 'Budget confirmed',
+      healthMeasurement: 'At least one measurement',
+      healthManual: 'If the row is present but inactive, reload this page or restart DSH once.',
+      healthFixed: 'Repair requested. Recheck in a few seconds.',
+      insightsTitle: 'What to do next',
+      insightToolShare: '{share} of this session is tool schemas ({tokens} tokens). Review low-use tools.',
+      insightUnusedTools: '{count} tools were not called in the scanned sessions ({tokens} tokens of schema).',
+      insightRepeatedCompaction: '{sessions} sessions compacted repeatedly ({compactions} total). Consider a larger budget or a less aggressive strategy.',
+      insightCompactionFailures: '{count} compaction failures. Open Events for the error and retry command.',
+      insightUnknownPricing: '{sessions} sessions have no price ({tokens} tokens). Add a model price to include them.',
+      insightCostOutlier: '{title} costs {multiple}× the median session ({cost}). Open it to see why.',
+      insightPricingStale: 'Built-in prices are {days} days old (refresh cadence {threshold} days); cost and savings estimates drift silently.',
+      insightCacheLow: 'Prefix cache hit is only {share} across {tokens} tokens — the system prompt prefix is probably unstable (timestamps, session ids, random values).',
+      insightNotCompacted: 'This session is already at {share} of budget ({tokens} / {budget}) but has never been compacted — check the trigger line or whether compaction is mounted.',
+      insightBudgetUnconfirmed: 'Budget was never confirmed, so all ratios are estimated against the default {tokens}.',
+      insightAnalyticsTruncated: 'Analytics only covers the newest {scanned} of {total} sessions; widen the limit before drawing conclusions.',
+      insightOpen: 'Open',
+      insightApply: 'Apply',
+      insightApplyConfirmBudget: 'Confirm budget',
+      insightApplyEnableCompaction: 'Enable compaction',
+      insightApplyWidenWindow: 'Widen window',
+      insightsEmpty: 'No actionable issues in the scanned range.',
+      savingsTitle: 'Context reduction (est.)',
+      savingsCompactions: '{count} compactions',
+      savingsTokens: '{tokens} tokens removed',
+      savingsCost: '≈ {cost} avoided on the next request',
+      savingsMethod: 'before→after per compaction, Flash input rate; not a full billing reconciliation',
+      dataScope: 'Scope: latest {scanned}/{total} sessions (limit {limit})',
+      exportJson: 'Export JSON',
+      exportConfirmHint: 'The export includes local absolute paths (cwd). Download anyway?',
+      exportConfirmYes: 'Download',
+      exportCsv: 'Export CSV',
+      clearData: 'Clear local data',
+      clearDataHint: 'Deletes local compaction logs and/or session toggles. Profile config is not touched.',
+      clearLogs: 'Clear compaction log',
+      clearToggles: 'Clear session toggles',
+      clearAllData: 'Clear logs and toggles',
+      clearDataConfirm: 'This cannot be undone. Continue?',
+      cleared: 'Local data cleared.',
+      compareTitle: 'Compare sessions',
+      compareA: 'Session A',
+      compareB: 'Session B',
+      compareTokens: 'Tokens',
+      compareRequests: 'Requests',
+      compareCost: 'Cost (est.)',
+      compareCompactions: 'Compactions',
+      compareEmpty: 'Pick two sessions to compare.',
+      pricingTitle: 'Model pricing',
+      pricingHint: 'CNY per 1M tokens. Rows are evaluated top-down; the first match wins. Unknown models stay blank.',
+      pricingHolidays: 'Holidays: {builtin} built-in + {custom} custom = {total} days (off-peak all day)',
+      pricingHolidaysIgnoreBuiltin: 'built-in table ignored',
+      pricingHolidaysWhere: 'Change `holidays` (YYYY-MM-DD array) in cordis.patch.yml → plugin config',
+      healthHolidays: 'Holiday table',
+      pricingMatch: 'Model regex',
+      pricingInput: 'Input',
+      pricingCacheRead: 'Cache read',
+      pricingCacheWrite: 'Cache write',
+      pricingOutput: 'Output',
+      pricingBandsHint: 'Peak / off-peak bands (optional; leave empty for all-day pricing)',
+      pricingPeakInput: 'Peak input',
+      pricingPeakOutput: 'Peak output',
+      pricingOffPeakInput: 'Off-peak input',
+      pricingOffPeakOutput: 'Off-peak output',
+      pricingBandIncomplete: 'Fill both input and output for a band, or leave both empty.',
+      pricingAdd: 'Add price row',
+      pricingRemove: 'Remove',
+      pricingSave: 'Save prices',
+      pricingSaved: 'Prices saved.',
+      pricingEmpty: 'No custom price rows. Built-in DeepSeek prices still apply.',
+      alertControlMissing: 'The control row is not active; budget enforcement and prompt/tool changes will not run.',
+      alertBudgetWarn: 'Context is above the warning line ({percent}).',
+      alertBudgetError: 'Context is over the error line ({percent}). Compact or raise the budget.',
+      alertCompactionFailed: 'The last compaction failed. See Events for details.',
+      range7: '7 days',
+      range30: '30 days',
+      rangeAll: 'All',
+      kpiSessions: 'Sessions',
+      kpiTokens: 'Tokens',
+      kpiCache: 'Cache hit',
+      kpiTools: 'Tool calls',
+      kpiActive: 'Active time',
+      kpiCompactions: 'Compactions',
+      costEstimated: 'estimated from official peak/off-peak rates',
+      billingTitle: 'Billing (est.)',
+      costEstimateLabel: 'Cost (est.)',
+      costTotal: 'Total',
+      costCacheHit: 'Cache hit input',
+      costCacheMiss: 'Cache miss input',
+      costCacheWrite: 'Cache write input',
+      costOutput: 'Output',
+      costPeak: 'peak',
+      costOffPeak: 'off-peak',
+      costPricingNote: 'Converted with DeepSeek official CNY peak/off-peak rates; Search/Fetch not included',
+      costRateUnit: 'per 1M tokens',
+      costRateExample: 'rate example',
+      costNow: 'now',
+      costCustom: 'custom pricing',
+      readFailures: '{count} sessions could not be read',
+      coverage: 'Scanned {scanned}/{total} sessions',
+      coverageShort: '{scanned}/{total} scanned',
+      dailyTitle: 'Tokens per day',
+      sessionsTitle: 'Recent sessions',
+      searchSessions: 'Search title / workspace / id',
+      noSessions: 'No sessions in this range',
+      sortRecent: 'Newest',
+      sortTokens: 'Tokens',
+      sortCost: 'Cost',
+      openSession: 'Open chat',
+      trendTitle: 'Request context trend',
+      trendPrompt: 'Input',
+      trendOutput: 'Output',
+      trendCompaction: 'Compaction',
+      trendPeak: 'Peak',
+      trendAfterCompaction: 'after compaction',
+      requestsUnit: 'requests',
+      sessionLabel: 'Session',
+      trendNoData: 'No completed requests yet',
+      eventsTitle: 'Compaction & injections',
+      eventAll: 'All',
+      eventSuccess: 'Success',
+      eventFailure: 'Failure',
+      eventCompaction: 'Compaction',
+      eventInject: 'Injection',
+      noEvents: 'No matching events',
+      turnsLabel: 'Turns',
+      requestsLabel: 'Requests',
+      analyticsLoading: 'Loading session analytics…',
+      analyticsError: 'Analytics unavailable',
+      budgetLine: 'Budget',
+      targetLine: 'Target',
+      beforeAfter: 'Before → after',
+      roundsLabel: 'Rounds',
+      durationLabel: 'Duration',
+      showMore: 'Show more',
+      showLess: 'Show less',
+    }
+
+    const zh = {
+      nav: '上下文',
+      panel: '上下文',
+      title: '上下文',
+      pageTitle: '上下文',
+      versionLabel: '插件版本',
+      reloadUi: '刷新页面',
+      reloadHint: '插件已更新，刷新页面即可加载新界面（无需重启 DSH）。',
+      description: '看清上下文花在哪，控制压缩与工具，并保持 agent preset 健康。',
+      budgetLimit: '预算上限',
+      used: '实测用量',
+      remaining: '剩余',
+      ratio: '已用',
+      pluginBudgetTag: '插件预算',
+      statusOk: '正常',
+      statusWarn: '警告',
+      statusError: '已超限',
+      warnAt: '警告阈值',
+      errorAt: '超限阈值',
+      compressionStrategy: '压缩策略',
+      strategyConservative: '保守 —— 90% 压缩，保留更多',
+      strategyBalanced: '均衡 —— 90% 预压缩，保留 25%',
+      strategyAggressive: '激进 —— 提前压缩，保留 10%',
+      triggerLabel: '触发比例',
+      invalidTrigger: '触发比例必须在 (0, 1] 之间。',
+      triggerHint: '用量达到预算的这个比例时自动压缩（1 = 到上限才触发；0.75 = 到警告比例就预压缩）。',
+      targetLabel: '目标比例',
+      invalidTarget: '目标比例必须在 (0, 1) 之间，且小于触发比例。',
+      invalidAnalyticsLimit: '分析会话上限必须是 1–200 的整数。',
+      compacting: '压缩中…',
+      compactingHint: '正在压缩历史；下一次请求可能会等待片刻。',
+      refresh: '刷新',
+      collapse: '收起',
+      expand: '展开',
+      retry: '重试',
+      loading: '正在加载…',
+      error: '读取状态失败',
+      errorUnauthorized: '本会话登录已失效，请刷新页面或重新登录。',
+      errorForbidden: '本会话无权访问插件接口，请刷新页面或检查 token。',
+      errorUnavailable: '插件服务暂时不可用，请稍后重试。',
+      errorNetwork: '无法连接插件，请确认 DSH 实例仍在运行。',
+      cardFailed: '本卡片渲染失败：{message}',
+      tokens: 'tokens',
+      control: '控制',
+      controlOn: '已启用',
+      controlOff: '未启用',
+      controlReady: '控制行已挂在 agent preset 内，超出上下文会自动压缩。',
+      controlMissing: '尚未生效 —— 需要把 agent-embodiment/control 加到 agent preset 的 compaction 组里（设置 → Agent preset → compaction group）。',
+      controlRequired: '提示词与工具修改需要控制行生效。请先把 agent-embodiment/control 挂进 agent preset。',
+      controlLast: '最近一次压缩',
+      controlEnable: '启用自动压缩（写入 agent preset）',
+      controlDisable: '停用自动压缩（移除 preset 行）',
+      controlPresetHint: '会往 preset-standard 里加一行；preset 配置会变成 profile 覆盖层。',
+      controlBusy: '正在应用…',
+      controlWriteFailed: '更新 agent preset 失败',
+      controlEnabled: '自动压缩已启用，按当前上下文执行。',
+      controlError: '最近压缩未生效',
+      controlDisabled: '已从 agent preset 移除自动压缩行。',
+      configTitle: '全局配置',
+      configHint: '写入 profile 里本插件的 config 行，保存后插件会按新配置重挂。',
+      analyticsLimitLabel: '分析会话上限',
+      analyticsLimitHint: '概览/趋势最多扫描最近多少个会话（1–200，默认 40）。',
+      configUnavailable: '当前客户端不能编辑宿主配置，这里只读。',
+      save: '保存',
+      saving: '保存中…',
+      saved: '已保存，插件已按新配置重挂。',
+      saveRefused: '宿主拒绝了这次写入。',
+      saveFailed: '保存失败',
+      invalidTokens: '上下文必须是正整数。',
+      invalidRatios: '阈值必须在 (0, 1] 之间，且警告阈值要小于超限阈值。',
+      defaultBudgetShort: '默认上限',
+      warnLabel: '警告比例',
+      errorLabel: '超限比例',
+      pluginContext: '插件上下文',
+      pluginContextAria: '插件上下文已用 {percent}',
+      pluginContextHint: '百分比按插件为本会话配置的上下文上限计算；token 构成与模型窗口口径见内置上下文指示器。',
+      balance: '余额',
+      balanceTopped: '充值',
+      balanceBonus: '赠金',
+      balanceSignedOut: '登录后查看余额',
+      balanceUnavailable: '余额不可用',
+      balanceCheckPlatform: '前往开放平台查看',
+      balanceTopUp: '充值',
+      balanceRefresh: 'DSH 账户余额，点击刷新',
+      balanceLoading: '正在读取余额…',
+      balanceToggleTitle: '余额胶囊',
+      balanceToggleHint: '默认关闭；开启状态保存在本机，重启 DSH 后保留。',
+      balanceEnable: '开启',
+      balanceDisable: '关闭',
+      inventoryTitle: '工具与提示词',
+      inventoryTools: '工具',
+      inventoryPrompts: '提示词',
+      inventoryEmpty: '本会话还没有发起过请求。先发一条消息，再回来打开本页。',
+      inventoryRisk: '关闭后该项会从下一次请求里移除，模型行为可能异常；可以在这里一键恢复。',
+      onlyEnabled: '仅看已启用',
+      noneEnabled: '没有启用的项。',
+      inventoryLoadFailed: '加载工具 / 提示词失败',
+      openPanel: '打开完整面板',
+      sessionSwitch: '会话',
+      globalSwitch: '全局',
+      confirm: '确认',
+      cancel: '取消',
+      restoreAll: '恢复全部',
+      restoreConfirm: '将清除：会话开关、会话提示词文本覆盖、全局提示词覆盖、全局工具禁用。确认？',
+      tokensShort: 'tokens',
+      copy: '复制',
+      copied: '已复制',
+      parameters: '参数（JSON Schema）',
+      source: '来源',
+      sourceUnknown: '未识别',
+      edit: '编辑',
+      resetOriginal: '恢复原文',
+      globalOverridden: '已覆盖（全局）',
+      sessionOverridden: '已覆盖（会话）',
+      saveSession: '仅保存到本会话',
+      saveGlobal: '保存到全局',
+      savedSession: '已保存到本会话（下一次请求生效）。',
+      savedGlobal: '已保存到全局。',
+      confirmGlobal: '确认保存到全局？将影响所有会话并写入 profile。',
+      resetSession: '清除会话覆盖',
+      editHint: '写入 profile 配置（全局生效），原文保留可恢复。',
+      diffDelta: '相对当前文本净增减 {delta} tokens',
+      diffNoChange: '暂未修改。',
+      toolDisabledImpact: '已禁用 — 本会话预计释放约 {tokens} tokens 工具 schema（需控制行已挂载）。',
+      toolDisabledImpactUnknown: '已禁用 — 本会话不再向 agent 提供该工具。',
+      toolDisableWarning: '关闭工具后该会话的 agent 不再拿到它；重新打开即可恢复。',
+      alertToggle: '显示告警条与底部圆点',
+      alertToggleHint: '上下文超过警告线或控制行未挂载时给出提示。',
+      extraPromptAdd: '新增提示词',
+      extraPromptName: '提示词名称',
+      extraPromptText: '提示词内容',
+      extraPromptSave: '新增',
+      extraPromptSaved: '已新增，下一次请求生效。',
+      extraPromptHint: '选择放置位置；修改会在下一次请求生效。',
+      extraPromptPlacement: '追加位置',
+      extraPromptSystem: '系统提示词',
+      extraPromptUser: '每次用户提问末尾',
+      extraPromptSystemBadge: '系统',
+      extraPromptUserBadge: '每次提问',
+      extraPromptSwitchUser: '改为追加到提问末尾',
+      extraPromptSwitchSystem: '改为系统提示词',
+      extraPromptDelete: '删除',
+      extraPromptTemplates: '模板',
+      extraPromptTemplateMethod: '方法论（通用）',
+      extraPromptTemplateMethodName: '方法论',
+      extraLabel: '新增',
+      promptTokens: '提示词',
+      toolTokens: '工具定义',
+      historyTokens: '上文',
+      userTokens: '本轮用户对话',
+      tabsOverview: '概览',
+      tabsTrend: '趋势',
+      tabsEvents: '事件',
+      tabsSettings: '设置',
+      tabsLabel: '分区',
+      scaffoldTitle: 'Agent 脚手架',
+      scaffoldIntro: '生成一个带感官、手、技能和验证闭环的 DSH agent preset。',
+      scaffoldTemplate: '模板',
+      scaffoldTarget: '工作区目录',
+      scaffoldTargetHint: 'DSH 宿主上的绝对路径；文件写入 .dsh/scaffolds 与 .agents/skills。',
+      scaffoldName: '显示名称',
+      scaffoldSlug: 'Preset id',
+      scaffoldPreview: '预览',
+      scaffoldGenerate: '生成',
+      scaffoldGenerating: '生成中…',
+      scaffoldFiles: '文件',
+      scaffoldWarnings: '警告',
+      scaffoldInstall: '安装命令',
+      scaffoldGenerated: '已生成。安装到当前 profile，然后在新会话里选择这个 preset。',
+      scaffoldError: '脚手架生成失败',
+      scaffoldTargetRequired: '请输入工作区的绝对路径。',
+      scaffoldOverwrite: '覆盖已有文件',
+      scaffoldAgents: '合并带标记的 section 到 AGENTS.md',
+      scaffoldProcessSkills: '包含过程 skill（sense-environment、verify-change）',
+      scaffoldMcp: 'MCP servers（JSON，可选）',
+      scaffoldMcpHint: '{ serverName, transport: "stdio"|"streamable-http", command/args/env 或 url/headers } 数组；secret 用 ${ENV_VAR}。安装生成的 preset 后，这里的 command 会以本机命令启动。',
+      scaffoldMcpInvalid: 'MCP JSON 格式不正确。',
+      scaffoldCopy: '复制',
+      scaffoldCopied: '已复制',
+      scaffoldEmpty: '先预览，看看这个 preset 会生成哪些文件。',
+      labsTitle: 'Labs：Agent 脚手架',
+      skillsTitle: '技能',
+      skillsHint: '来自 .dsh/skills、.agents/skills、~/.dsh/skills、~/.agents/skills 等根目录的技能。这里只读：能否进模型、能否给用户调，由各自 SKILL.md 的 frontmatter 决定。',
+      skillsCount: '{total} 个技能，其中 {model} 个进模型',
+      skillsEmpty: '当前工作区没有发现技能。',
+      skillsUnavailable: '当前宿主没有挂载技能注册表。',
+      skillsIncomplete: '部分技能 provider 未完成，列表可能不完整。',
+      skillsCwd: '扫描的工作区：{cwd}',
+      skillsVia: '来源：{via}',
+      skillsSearch: '按名称或描述筛选',
+      skillsNoMatch: '没有匹配的技能。',
+      skillsCopyPath: '复制路径',
+      skillsCopied: '已复制',
+      skillsGlobalOnly: '未接入 preset 视角：宿主目录里可能还有更多技能没列在这里。',
+      skillsViaRegistry: '宿主注册表',
+      skillsViaFilesystem: '目录扫描',
+      skillsViaRegistryEmpty: '注册表为空，扫描也没找到',
+      skillsView: '查看',
+      skillsTruncated: '正文已截断，完整内容请打开文件。',
+      skillsModelYes: '模型',
+      skillsModelNo: '模型·关',
+      skillsUserYes: '用户',
+      skillsUserNo: '用户·关',
+      skillsModelHint: '该技能是否对模型可见、可加载。',
+      skillsUserHint: '该技能是否允许用户直接调用。',
+      labsHint: '实验能力，和上下文闭环分开；只有 repo-coder 与 web-researcher 经过验证。',
+      onboardingTitle: '设置上下文控制',
+      onboardingIntro: '三步，大约一分钟；可以跳过，预算和策略之后仍可在设置里修改。',
+      onboardingBudget: '1. 确认预算',
+      onboardingBudgetHint: '这里是插件用于百分比和压缩的预算，不是模型窗口；模型窗口见内置 ContextMeter。',
+      onboardingStrategy: '2. 选择压缩策略',
+      onboardingPreset: '3. 授权控制行',
+      onboardingPresetHint: '插件可以往 agent preset 里加一行，压缩才会真正运行；不加则提示词/工具修改只读。',
+      onboardingPresetYes: '允许写入控制行',
+      onboardingFinish: '完成设置',
+      onboardingLater: '稍后',
+      onboardingReopen: '重新打开设置',
+      sessionBudget: '本会话预算',
+      sessionBudgetHint: '只覆盖当前会话的预算，优先级高于控制行与宿主默认值。',
+      sessionBudgetNoSession: '先打开一个会话，才能设置它的预算。',
+      sessionBudgetCurrent: '当前覆盖',
+      sessionBudgetSaved: '已保存',
+      sessionBudgetFailed: '保存失败',
+      clear: '清除',
+      onboardingReopenHint: '你跳过了首次设置，可以随时在这里重新打开。',
+      onboardingBudgetRequired: '请先确认一个正整数预算。',
+      healthTitle: '控制面健康',
+      healthOk: '核心检查全部通过',
+      healthIssue: '需要处理',
+      healthFix: '修复控制行',
+      healthControl: '控制行已生效',
+      healthPreset: '控制行已写入 agent preset',
+      healthConfig: '宿主配置可编辑',
+      healthBudget: '预算已确认',
+      healthMeasurement: '至少有一次测量',
+      healthManual: '如果控制行已存在但仍未生效，刷新页面或重启一次 DSH。',
+      healthFixed: '已请求修复，几秒后重新检测。',
+      insightsTitle: '接下来做什么',
+      insightToolShare: '本会话 {share} 是工具定义（{tokens} tokens）。检查低频工具。',
+      insightUnusedTools: '{count} 个工具在已扫描会话中没有被调用（共 {tokens} tokens schema）。',
+      insightRepeatedCompaction: '{sessions} 个会话反复压缩（共 {compactions} 次）。考虑放宽预算或降低策略强度。',
+      insightCompactionFailures: '{count} 次压缩失败。到事件页查看原因和重试命令。',
+      insightUnknownPricing: '{sessions} 个会话没有价格（{tokens} tokens）。补充模型价格后可计入费用。',
+      insightCostOutlier: '{title} 的费用是中位数的 {multiple} 倍（{cost}）。打开看看原因。',
+      insightPricingStale: '内置价目已 {days} 天未更新（刷新周期 {threshold} 天），费用与节省估算会静默偏差。',
+      insightCacheLow: '前缀缓存命中只有 {share}（{tokens} tokens）——系统提示词前缀可能不稳定（时间戳、会话 id、随机量）。',
+      insightNotCompacted: '本会话已到预算的 {share}（{tokens} / {budget}）却从未压缩——检查触发线或控制行是否挂载。',
+      insightBudgetUnconfirmed: '预算尚未确认，所有比例都按默认 {tokens} 估算。',
+      insightAnalyticsTruncated: '分析只覆盖最近 {scanned} / {total} 个会话，得出结论前先放宽上限。',
+      insightOpen: '查看',
+      insightApply: '处理',
+      insightApplyConfirmBudget: '确认预算',
+      insightApplyEnableCompaction: '启用压缩',
+      insightApplyWidenWindow: '放宽窗口',
+      insightsEmpty: '当前范围内没有需要处理的问题。',
+      savingsTitle: '上下文减少（估算）',
+      savingsCompactions: '{count} 次压缩',
+      savingsTokens: '减少 {tokens} tokens',
+      savingsCost: '下一次请求约省 {cost}',
+      savingsMethod: '按每次压缩前→后差值、Flash 输入价估算；不是完整账单对账',
+      dataScope: '统计范围：最近 {scanned}/{total} 个会话（上限 {limit}）',
+      exportJson: '导出 JSON',
+      exportConfirmHint: '导出文件包含本机绝对路径（cwd），确认下载？',
+      exportConfirmYes: '确认下载',
+      exportCsv: '导出 CSV',
+      clearData: '清理本地数据',
+      clearDataHint: '只删除本地压缩日志和/或会话开关，不改 profile 配置。',
+      clearLogs: '清理压缩日志',
+      clearToggles: '清理会话开关',
+      clearAllData: '清理日志和开关',
+      clearDataConfirm: '此操作不可撤销，确认继续？',
+      cleared: '本地数据已清理。',
+      compareTitle: '会话对比',
+      compareA: '会话 A',
+      compareB: '会话 B',
+      compareTokens: 'Tokens',
+      compareRequests: '请求数',
+      compareCost: '费用（估）',
+      compareCompactions: '压缩次数',
+      compareEmpty: '选择两个会话进行对比。',
+      pricingTitle: '模型价格',
+      pricingHint: '人民币 / 每百万 tokens；自上而下匹配，第一条命中生效；未知模型保持空白。',
+      pricingHolidays: '节假日：内置 {builtin} 天 + 自定义 {custom} 天 = {total} 天（全天按空闲价）',
+      pricingHolidaysIgnoreBuiltin: '已忽略内置表',
+      pricingHolidaysWhere: '在 cordis.patch.yml 的插件 config 里改 `holidays`（YYYY-MM-DD 数组）',
+      healthHolidays: '节假日表',
+      pricingMatch: '模型正则',
+      pricingInput: '输入',
+      pricingCacheRead: '缓存命中',
+      pricingCacheWrite: '缓存写入',
+      pricingOutput: '输出',
+      pricingBandsHint: '峰谷两档（可留空，留空按全天同价）',
+      pricingPeakInput: '峰时输入',
+      pricingPeakOutput: '峰时输出',
+      pricingOffPeakInput: '谷时输入',
+      pricingOffPeakOutput: '谷时输出',
+      pricingBandIncomplete: '峰谷每档需同时填写输入与输出，或两者都留空。',
+      pricingAdd: '新增价格行',
+      pricingRemove: '删除',
+      pricingSave: '保存价格',
+      pricingSaved: '价格已保存。',
+      pricingEmpty: '没有自定义价格；内置 DeepSeek 价格仍生效。',
+      alertControlMissing: '控制行未生效，预算约束和提示词/工具修改都不会运行。',
+      alertBudgetWarn: '上下文已超过警告线（{percent}）。',
+      alertBudgetError: '上下文已超过超限线（{percent}）。请压缩或提高预算。',
+      alertCompactionFailed: '最近一次压缩失败，详情见事件页。',
+      range7: '近 7 天',
+      range30: '近 30 天',
+      rangeAll: '全部',
+      kpiSessions: '会话数',
+      kpiTokens: '累计 tokens',
+      kpiCache: '缓存命中',
+      kpiTools: '工具调用',
+      kpiActive: '活跃时长',
+      kpiCompactions: '压缩次数',
+      costEstimated: '按官方峰谷价估算',
+      billingTitle: '计费（估算）',
+      costEstimateLabel: '费用（估）',
+      costTotal: '合计',
+      costCacheHit: '输入（缓存命中）',
+      costCacheMiss: '输入（缓存未命中）',
+      costCacheWrite: '输入（缓存写入）',
+      costOutput: '输出',
+      costPeak: '高峰',
+      costOffPeak: '空闲',
+      costPricingNote: '按 DeepSeek 官方人民币峰谷价逐条换算；不含 Search/Fetch',
+      costRateUnit: '每百万 tokens',
+      costRateExample: '价目示例',
+      costNow: '当前',
+      costCustom: '自定义价格',
+      readFailures: '{count} 个会话读取失败',
+      coverage: '已扫描 {scanned}/{total} 个会话',
+      coverageShort: '{scanned}/{total} 已扫描',
+      dailyTitle: '每日 tokens',
+      sessionsTitle: '最近会话',
+      searchSessions: '搜索标题 / 工作区 / id',
+      noSessions: '该范围内没有会话',
+      sortRecent: '最近',
+      sortTokens: 'Tokens',
+      sortCost: '费用',
+      openSession: '打开会话',
+      trendTitle: '请求上下文趋势',
+      trendPrompt: '输入',
+      trendOutput: '输出',
+      trendCompaction: '压缩',
+      trendPeak: '峰值',
+      trendAfterCompaction: '压缩后',
+      requestsUnit: '次请求',
+      sessionLabel: '会话',
+      trendNoData: '还没有完成的请求',
+      eventsTitle: '压缩与注入事件',
+      eventAll: '全部',
+      eventSuccess: '成功',
+      eventFailure: '失败',
+      eventCompaction: '压缩',
+      eventInject: '注入',
+      noEvents: '没有匹配的事件',
+      turnsLabel: '轮数',
+      requestsLabel: '请求数',
+      analyticsLoading: '正在加载会话统计…',
+      analyticsError: '统计暂不可用',
+      budgetLine: '预算',
+      targetLine: '目标',
+      beforeAfter: '压缩前 → 后',
+      roundsLabel: '轮次',
+      durationLabel: '耗时',
+      showMore: '展开更多',
+      showLess: '收起',
+    }
+
+    let sessionService = null
+    let workspaceService = null
+    const sessionServiceSubscribers = new Set()
+
+    function publishSessionService(service) {
+      sessionService = service
+      for (const notify of sessionServiceSubscribers) notify()
+    }
+
+    /** 当前 mainView 保留的会话 id；拿不到时返回 null。 */
+    function currentSessionId() {
+      const sessions = sessionService
+      if (!sessions) return null
+      try {
+        const state = sessions.list.getSnapshot()
+        for (const id of state.ids ?? []) {
+          try {
+            const info = sessions.retainInfo(id).getSnapshot()
+            if (((info && info.retainedBy) || {}).mainView > 0) return id
+          } catch {}
+        }
+      } catch {}
+      return null
+    }
+
+    /** 订阅会话列表，返回当前选中会话 id（变化时重渲染）。 */
+    function useCurrentSession() {
+      // sessions 服务可能比组件晚注入；用 service 状态 + 订阅两层，避免只拿一次快照。
+      const [service, setService] = react.useState(sessionService)
+      const [id, setId] = react.useState(() => currentSessionId())
+      react.useEffect(() => {
+        const notify = () => setService(sessionService)
+        sessionServiceSubscribers.add(notify)
+        notify()
+        return () => sessionServiceSubscribers.delete(notify)
+      }, [])
+      react.useEffect(() => {
+        if (!service) return undefined
+        setId(currentSessionId())
+        return service.list.subscribe(() => setId(currentSessionId()))
+      }, [service])
+      return id
+    }
+
+    const inject = ['slots', 'locale']
+
+    const h = react.createElement
+
+    // ── 数字格式 ────────────────────────────────────────────────────────────
+    function compactTokens(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      if (number < 1000) return String(Math.round(number))
+      if (number < 1e6) {
+        const scaled = number / 1000
+        return `${scaled >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10}K`
+      }
+      const scaled = number / 1e6
+      return `${scaled >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10}M`
+    }
+
+    function formatTokens(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      try {
+        return new Intl.NumberFormat().format(Math.round(number))
+      } catch {
+        return String(Math.round(number))
+      }
+    }
+
+    function formatPercent(value, digits = 1) {
+      const number = Number(value)
+      return Number.isFinite(number) ? `${(number * 100).toFixed(digits)}%` : '—'
+    }
+
+    /** 人民币计费显示：>=1 分显示两位，小额显示四位，低于 0.0001 元显示上界。 */
+    function formatCost(value) {
+      if (value === null || value === undefined) return '—'
+      const number = Number(value)
+      if (!Number.isFinite(number)) return '—'
+      if (number === 0) return '¥0.00'
+      if (number < 0.0001) return '<¥0.0001'
+      if (number < 0.01) return `¥${number.toFixed(4)}`
+      return `¥${number.toFixed(2)}`
+    }
+
+    /**
+     * 把原始 fetch 错误映射成可操作文案。error 形如 "HTTP 401"、"TypeError: Failed to fetch"
+     * 或自定义 message；这里只按状态码 / 网络错误分类，保留原始信息供诊断。
+     * @param {any} error 原始错误（可能是 Error 或字符串）
+     * @param {(key: string) => string} t 词典函数
+     * @returns {string} 人话文案 + 原始信息
+     */
+    function humanizeError(error, t) {
+      const raw = String((error && error.message) || error || '')
+      const status = /HTTP\s+(\d{3})/iu.exec(raw)?.[1]
+      const base = status === '401'
+        ? t('errorUnauthorized')
+        : status === '403'
+          ? t('errorForbidden')
+          : status === '404' || status === '503' || status === '500'
+            ? t('errorUnavailable')
+            : /Failed to fetch|NetworkError|ECONNREFUSED|ENOTFOUND/iu.test(raw)
+              ? t('errorNetwork')
+              : null
+      // 有原始信息时附上，方便复制诊断；没有映射到已知类别就原样返回。
+      if (!base) return raw || t('error')
+      return raw && !/^HTTP\s+\d{3}\s*$/u.test(raw) ? `${base}（${raw}）` : base
+    }
+
+    /** 趋势图纵轴：把峰值向上取整到 1/2/5×10^n 的刻度，避免每根柱子都顶满。 */
+    function niceAxisMax(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number) || number <= 0) return 1
+      const rough = number / 3
+      const magnitude = Math.pow(10, Math.floor(Math.log10(rough)))
+      const normalized = rough / magnitude
+      const step = (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude
+      return Math.ceil(number / step) * step
+    }
+
+    /** 与 DSH 账号页一致的金额格式：两位小数，低于一分钱时显示 <¥0.01。 */
+    function formatWalletAmount(amount, currency) {
+      const symbol = currency === 'USD' ? '$' : '¥'
+      const number = Number(amount)
+      if (!Number.isFinite(number)) return `${symbol}${amount}`
+      if (number === 0) return `${symbol}0.00`
+      if (number < 0) return `-${symbol}${number > -0.01 ? '0.01' : Math.abs(number).toFixed(2)}`
+      if (number < 0.01) return `<${symbol}0.01`
+      return `${symbol}${number.toFixed(2)}`
+    }
+
+    /** 充值余额 + 赠金余额按币种合并，供 dock 胶囊显示。 */
+    function walletSummary(balance) {
+      const totals = new Map()
+      for (const wallet of [...((balance && balance.value) || []), ...((balance && balance.bonusWallets) || [])]) {
+        const amount = Number(wallet && wallet.balance)
+        if (!Number.isFinite(amount)) continue
+        totals.set(wallet.currency, (totals.get(wallet.currency) || 0) + amount)
+      }
+      return [...totals.entries()].map(([currency, amount]) => formatWalletAmount(amount, currency)).join(' / ')
+    }
+
+    function formatTime(iso) {
+      if (typeof iso !== 'string' || iso.length === 0) return '—'
+      const date = new Date(iso)
+      return Number.isNaN(date.getTime()) ? iso : date.toLocaleTimeString()
+    }
+
+    function formatDurationMs(value) {
+      const number = Number(value)
+      if (!Number.isFinite(number) || number < 0) return '—'
+      if (number < 1000) return `${Math.round(number)}ms`
+      if (number < 60000) return `${(number / 1000).toFixed(1)}s`
+      if (number < 3600000) return `${Math.round(number / 60000)}m`
+      return `${(number / 3600000).toFixed(1)}h`
+    }
+    /** 会话 id 的短标签：去掉 "session-" 前缀，避免所有 id 都显示成 session-。 */
+    function shortSessionId(value) {
+      const text = String(value)
+      if (text.startsWith('session-')) return text.slice(8, 20)
+      return text.slice(0, 12)
+    }
+
+    function ratioColor(ratio, warnAt = 0.75, errorAt = 0.9) {
+      if (ratio === null || ratio === undefined) return 'var(--dsw-alias-label-tertiary)'
+      if (ratio >= errorAt) return 'var(--dsw-alias-state-error-primary)'
+      if (ratio >= warnAt) return 'var(--dsw-alias-state-warn-primary)'
+      return 'var(--dsw-alias-brand-primary)'
+    }
+
+    /** 提示词预览的轻量 diff：优先显示公共前后缀之间的变化，避免整段重排。 */
+    function promptDiff(before, after) {
+      const left = String(before || '').split('\n')
+      const right = String(after || '').split('\n')
+      let start = 0
+      while (start < left.length && start < right.length && left[start] === right[start]) start += 1
+      let endLeft = left.length - 1
+      let endRight = right.length - 1
+      while (endLeft >= start && endRight >= start && left[endLeft] === right[endRight]) {
+        endLeft -= 1
+        endRight -= 1
+      }
+      const rows = []
+      for (let index = start; index <= endLeft; index += 1) rows.push({ kind: 'remove', text: left[index] })
+      for (let index = start; index <= endRight; index += 1) rows.push({ kind: 'add', text: right[index] })
+      if (rows.length === 0) return { rows: [], deltaTokens: 0 }
+      const deltaTokens = Math.ceil((String(after || '').length - String(before || '').length) / 4)
+      return { rows: rows.slice(0, 80), deltaTokens }
+    }
+
+    const NOTIFY_KEY = 'agent-embodiment:alerts:v1'
+    function readAlertsEnabled() {
+      try {
+        return window.localStorage.getItem(NOTIFY_KEY) !== '0'
+      } catch {
+        return true
+      }
+    }
+    function setAlertsEnabled(value) {
+      try {
+        window.localStorage.setItem(NOTIFY_KEY, value ? '1' : '0')
+      } catch {}
+    }
+    function useAlertsEnabled() {
+      const [enabled, setEnabled] = react.useState(readAlertsEnabled)
+      react.useEffect(() => {
+        const sync = () => setEnabled(readAlertsEnabled())
+        window.addEventListener('storage', sync)
+        return () => window.removeEventListener('storage', sync)
+      }, [])
+      return [enabled, (value) => { setAlertsEnabled(value); setEnabled(value) }]
+    }
+
+    /** ok / warn / error —— 与 ratioColor 的阈值一致，用于状态 badge 与文字。 */
+    function StatusBadge(props) {
+      const t = props.t
+      const state = props.state || 'ok'
+      const label = props.label || (state === 'error' ? t('statusError') : state === 'warn' ? t('statusWarn') : t('statusOk'))
+      const style = state === 'error' ? styles.badgeError : state === 'warn' ? styles.badgeWarn : styles.badgeOk
+      return h('span', { style: { ...styles.badge, ...style }, 'data-embodiment-status': state }, h('i', { style: { ...styles.dot, width: '6px', height: '6px', borderRadius: '999px', background: 'currentColor' } }), label)
+    }
+
+    // ── 上下文构成四色（前三色沿用内置 HUD，第 4 色用主题 accent） ─────────────
+    const BREAKDOWN_COLORS = {
+      system: 'var(--dsw-static-neutral-bluish-400)',
+      tools: '#a78bfa',
+      history: 'var(--dsw-static-blue-450)',
+      user: 'var(--dsw-static-green-400)',
+    }
+
+    /** 把宿主返回的四桶构成转成有序图例项；share 按四桶合计算。 */
+    function breakdownCategories(t, breakdown) {
+      if (!breakdown || typeof breakdown !== 'object') return []
+      const system = Number(breakdown.systemTokens) || 0
+      const tools = Number(breakdown.toolsTokens) || 0
+      const history = Number(breakdown.historyTokens) || 0
+      const user = Number(breakdown.userTokens) || 0
+      const total = system + tools + history + user
+      const rows = [
+        { key: 'system', label: t('promptTokens'), tokens: system, color: BREAKDOWN_COLORS.system },
+        { key: 'tools', label: t('toolTokens'), tokens: tools, color: BREAKDOWN_COLORS.tools },
+        { key: 'history', label: t('historyTokens'), tokens: history, color: BREAKDOWN_COLORS.history },
+        { key: 'user', label: t('userTokens'), tokens: user, color: BREAKDOWN_COLORS.user },
+      ]
+      return rows.map((row) => ({ ...row, share: total > 0 ? row.tokens / total : 0 }))
+    }
+
+    /** 分段上下文条：外层长度=已用/上下文，内部颜色=四桶占比；首次渲染从 0 平滑增长。 */
+    function SegmentedBar(props) {
+      const usedRatio = Math.max(0, Math.min(1, Number(props.usedRatio) || 0))
+      const categories = Array.isArray(props.categories) ? props.categories : []
+      const filled = categories.filter((row) => row.tokens > 0)
+      const signature = `${usedRatio}|${filled.map((row) => `${row.key}:${row.tokens}`).join(',')}`
+      const [grown, setGrown] = react.useState(false)
+      react.useEffect(() => {
+        setGrown(false)
+        const frame = requestAnimationFrame(() => setGrown(true))
+        return () => cancelAnimationFrame(frame)
+      }, [signature])
+      if (filled.length === 0) return h(MeterBar, { percent: usedRatio * 100, color: ratioColor(usedRatio, props.warnAt, props.errorAt) })
+      const bar = h(
+        'div',
+        { style: styles.bar },
+        filled.map((row) =>
+          h('div', {
+            key: row.key,
+            'data-embodiment-seg': row.key,
+            title: `${row.label} · ${compactTokens(row.tokens)} (${formatPercent(row.share)})`,
+            style: {
+              ...styles.barSegment,
+              width: `${(grown ? usedRatio * row.share * 100 : 0).toFixed(3)}%`,
+              minWidth: grown && usedRatio > 0 ? '2px' : 0,
+              background: row.color,
+              transition: 'width .7s cubic-bezier(.22,.61,.36,1)',
+            },
+          }),
+        ),
+      )
+      // 阈值刻度直接画在水位条上，省掉一排 chip；0%/100% 分别是条两端，不重复画。
+      // 刻度只靠颜色区分，读屏不可达，所以带 aria-label；文案由调用方通过 tickLabels 传入，
+      // 组件本身不碰词典（0.26.0 曾在这里直接调 t() 而抛 ReferenceError）。
+      if (!props.ticks) return bar
+      const labels = props.tickLabels || {}
+      const tick = (ratio, color, label) => (typeof ratio === 'number' && ratio > 0 && ratio < 1 ? h('i', { key: ratio, role: 'presentation', 'aria-label': label || '', style: { ...styles.barTick, left: `${ratio * 100}%`, background: color } }) : null)
+      return h('div', { style: styles.barWrap, role: 'img', 'aria-label': filled.map((row) => `${row.label} ${formatPercent(row.share)}`).join('，') }, bar, tick(props.warnAt, 'var(--dsw-alias-state-warn-primary)', labels.warn), tick(props.errorAt, 'var(--dsw-alias-state-error-primary)', labels.error))
+    }
+
+    // ── 内置 ContextMeter 的视觉规格（trigger / panel / bar / rows） ────────
+    const meter = {
+      root: { position: 'relative', flex: 'none', display: 'inline-flex' },
+      trigger: {
+        borderRadius: 'var(--dsw-radius-sm)',
+        color: 'var(--dsw-alias-label-tertiary)',
+        fontFamily: 'inherit',
+        fontSize: 'var(--dsh-content-font-size-secondary,13px)',
+        fontVariantNumeric: 'tabular-nums',
+        lineHeight: 'calc(20px + var(--dsh-content-font-delta-secondary,0px))',
+        whiteSpace: 'nowrap',
+        cursor: 'pointer',
+        background: 'transparent',
+        border: 'none',
+        flex: 'none',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '1px 8px',
+        display: 'inline-flex',
+      },
+      triggerHover: { background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-secondary)' },
+      panel: {
+        position: 'absolute',
+        bottom: 'calc(100% + 8px)',
+        right: 0,
+        zIndex: 1100,
+        boxSizing: 'border-box',
+        borderRadius: 'var(--dsw-radius-lg)',
+        background: 'var(--dsw-specific-menu)',
+        width: 'min(264px, calc(100vw - 24px))',
+        backdropFilter: 'var(--dsw-menu-backdrop-filter)',
+        boxShadow: 'var(--dsw-elevation-prominent)',
+        color: 'var(--dsw-alias-label-secondary)',
+        cursor: 'default',
+        border: 0,
+        padding: '12px',
+        fontSize: '12px',
+        lineHeight: '20px',
+        textAlign: 'left',
+      },
+      header: { alignItems: 'center', gap: '6px', display: 'flex' },
+      headline: { color: 'var(--dsw-alias-label-tertiary)' },
+      percent: { color: 'var(--dsw-alias-label-primary)', fontWeight: 500 },
+      figures: { fontVariantNumeric: 'tabular-nums', color: 'var(--dsw-alias-label-primary)', marginLeft: 'auto', fontWeight: 500 },
+      bar: { background: 'var(--dsw-alias-interactive-bg-hover)', borderRadius: '999px', gap: '1px', height: '4px', margin: '10px 0 12px', display: 'flex', overflow: 'hidden' },
+      segment: { borderRadius: '1px', flex: 'none', minWidth: '2px', height: '100%' },
+      rows: { margin: '6px 0 0', padding: 0 },
+      row: { justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '2px 0', display: 'flex' },
+      swatch: { verticalAlign: 'baseline', borderRadius: '2px', width: '8px', height: '8px', marginRight: '6px', display: 'inline-block' },
+    }
+
+    // ── 面板视觉（参考 dsh-context 的卡片/标题/chip/图例语义） ───────────────
+    const styles = {
+      page: { height: '100%', minHeight: 0, overflow: 'auto', background: 'var(--dsw-alias-bg-base)', color: 'var(--dsw-alias-label-primary)' },
+      pageInner: { maxWidth: '1040px', margin: '0 auto', padding: '24px clamp(16px, 4vw, 40px) 48px', display: 'flex', flexDirection: 'column', gap: '16px' },
+      root: { display: 'flex', flexDirection: 'column', gap: '12px' },
+      // tab 内容区单独一层容器只为承载 role=tabpanel / aria-labelledby：纵向节奏与 root 相同，
+      // 视觉与之前「卡片直接排在 root 里」一致。
+      tabPanel: { display: 'flex', flexDirection: 'column', gap: '12px' },
+      title: { margin: 0, fontSize: '21px', fontWeight: 600, lineHeight: '29px', letterSpacing: '-0.01em' },
+      versionChip: { display: 'inline-flex', alignItems: 'center', borderRadius: '999px', border: '0.5px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-layer-2)', padding: '1px 8px', fontSize: '11.5px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums' },
+      subtitle: { margin: 0, fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' },
+      cols: { display: 'flex', flexWrap: 'wrap', gap: '12px', alignItems: 'flex-start' },
+      card: {
+        minWidth: 'min(260px, 100%)',
+        boxSizing: 'border-box',
+        background: 'var(--dsw-alias-bg-layer-1)',
+        border: '0.5px solid var(--dsw-alias-border-l1)',
+        borderRadius: '12px',
+        padding: '14px 16px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '10px',
+      },
+      cardFill: { flex: '1 1 320px', minWidth: 'min(260px, 100%)' },
+      cardHead: { display: 'flex', alignItems: 'center', gap: '8px' },
+      cardTitle: { margin: 0, fontSize: '13px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)' },
+      cardToggle: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '18px', height: '18px', flex: 'none', border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-tertiary)', padding: 0, borderRadius: '4px', cursor: 'pointer', fontSize: '14px', lineHeight: 1 },
+      // ── 压缩记录（控制卡内可折叠列表，一条一行） ────────────────────────
+      logBox: { display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '2px', paddingTop: '8px', borderTop: '0.5px solid var(--dsw-alias-border-l1)' },
+      logToggle: { display: 'flex', alignItems: 'center', gap: '6px', alignSelf: 'stretch', background: 'transparent', border: 'none', padding: '2px 0', cursor: 'pointer', color: 'var(--dsw-alias-label-primary)', fontSize: '12.5px', fontWeight: 600, textAlign: 'left' },
+      logList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', maxHeight: '260px', overflow: 'auto' },
+      logItem: { display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px 0', borderTop: '0.5px solid var(--dsw-alias-border-l1)' },
+      logLine: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', minWidth: 0 },
+      logTime: { fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
+      logMain: { flex: '1 1 auto', minWidth: 0, fontSize: '12px', color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums', wordBreak: 'break-word' },
+      logSession: { marginLeft: 'auto', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap' },
+      logMessage: { margin: 0, fontSize: '11.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+      cardSub: { marginLeft: 'auto', fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
+      dot: { width: '8px', height: '8px', borderRadius: '2px', display: 'inline-block' },
+      bar: { background: 'var(--dsw-alias-interactive-bg-hover)', borderRadius: '999px', height: '8px', display: 'flex', overflow: 'hidden' },
+      barFill: { borderRadius: '999px', height: '100%', minWidth: '2px' },
+      barSegment: { height: '100%', minWidth: '2px' },
+      text: { margin: 0, fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-label-secondary)' },
+      emptyText: { margin: 0, fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' },
+      inventorySection: { display: 'flex', flexDirection: 'column', gap: '6px' },
+      sectionHead: { display: 'flex', alignItems: 'center', gap: '6px', background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: 'var(--dsw-alias-label-primary)', fontSize: '13px', fontWeight: 600, textAlign: 'left' },
+      inventoryList: { display: 'flex', flexDirection: 'column', gap: '4px', margin: 0, padding: 0, listStyle: 'none' },
+      inventoryItem: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '2px 0' },
+      inventoryRow: { display: 'flex', alignItems: 'center', gap: '8px', justifyContent: 'space-between', minWidth: 0 },
+      inventoryHead: { display: 'flex', alignItems: 'center', gap: '6px', minWidth: 0, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', textAlign: 'left' },
+      inventoryName: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      detailBox: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '8px 10px', borderLeft: '2px solid var(--dsw-alias-border-l2)' },
+      detailHead: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px' },
+      pre: { margin: 0, padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', border: '0.5px solid var(--dsw-alias-border-l1)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '11.5px', lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--dsw-alias-label-secondary)' },
+      copyBtn: { border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'inherit', borderRadius: '6px', padding: '1px 8px', fontSize: '11.5px', cursor: 'pointer' },
+      promptEditor: { width: '100%', boxSizing: 'border-box', minHeight: '120px', resize: 'vertical', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', border: '0.5px solid var(--dsw-alias-border-l1)', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '11.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-primary)' },
+      error: { margin: 0, fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-state-error-primary)' },
+      button: { alignSelf: 'flex-start', border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'inherit', borderRadius: '8px', padding: '4px 10px', fontSize: '12.5px', cursor: 'pointer' },
+      buttonPrimary: { background: 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary))', border: '0.5px solid transparent', color: 'var(--dsw-alias-label-primary-foreground, #fff)', fontWeight: 500 },
+      field: { display: 'flex', flexDirection: 'column', gap: '4px', fontSize: '12px', minWidth: 0 },
+      configGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '10px 12px' },
+      label: { color: 'var(--dsw-alias-label-secondary)' },
+      input: { width: '100%', boxSizing: 'border-box', border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: '8px', background: 'var(--dsw-alias-bg-base)', color: 'inherit', padding: '5px 9px', fontSize: '12.5px' },
+      // ── KPI / 图例 ────────────────────────────────────────────────────────
+      kpi: { display: 'flex', flexDirection: 'column', gap: '2px', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', minWidth: 0 },
+      kpiLabel: { fontSize: '10.5px', lineHeight: '15px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      kpiValue: { fontSize: '17px', lineHeight: '23px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      kpiSub: { fontSize: '10px', lineHeight: '14px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
+      legend: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '5px 14px', margin: '2px 0 0', padding: 0 },
+      legendItem: { display: 'flex', alignItems: 'center', gap: '7px', minWidth: 0, fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' },
+      legendName: { whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      legendValue: { marginLeft: 'auto', fontVariantNumeric: 'tabular-nums', fontWeight: 500, color: 'var(--dsw-alias-label-primary)', whiteSpace: 'nowrap' },
+      // ── 状态 badge ──────────────────────────────────────────────────────
+      badge: { display: 'inline-flex', alignItems: 'center', gap: '5px', borderRadius: '999px', padding: '1px 8px', fontSize: '11px', fontWeight: 600, lineHeight: '18px', border: '0.5px solid transparent', whiteSpace: 'nowrap' },
+      badgeOk: { color: 'var(--dsw-alias-state-success-primary)', borderColor: 'var(--dsw-alias-state-success-primary)' },
+      badgeWarn: { color: 'var(--dsw-alias-state-warn-primary)', borderColor: 'var(--dsw-alias-state-warn-primary)' },
+      badgeError: { color: 'var(--dsw-alias-state-error-primary)', borderColor: 'var(--dsw-alias-state-error-primary)' },
+      barWrap: { position: 'relative' },
+      barTick: { position: 'absolute', top: '-2px', bottom: '-2px', width: '1px', background: 'var(--dsw-alias-label-tertiary)', opacity: 0.55, pointerEvents: 'none' },
+      // ── 加载 / 空态 / 错误态 ─────────────────────────────────────────────
+      skeletonStack: { display: 'flex', flexDirection: 'column', gap: '8px', padding: '2px 0' },
+      skeleton: { height: '12px', borderRadius: '6px', background: 'var(--dsw-alias-interactive-bg-hover)' },
+      emptyState: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '8px', padding: '18px 12px', border: '1px dashed var(--dsw-alias-border-l2)', borderRadius: '10px', textAlign: 'center' },
+      // ── 工具与提示词：筛选 / 行 ──────────────────────────────────────────
+      filterRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
+      filterCount: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
+      filterToggle: { display: 'inline-flex', alignItems: 'center', gap: '5px', border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent', borderRadius: '999px', padding: '1px 9px', fontSize: '11.5px', lineHeight: '18px', cursor: 'pointer', color: 'var(--dsw-alias-label-secondary)' },
+      filterToggleOn: { background: 'var(--dsw-alias-interactive-bg-hover)', color: 'var(--dsw-alias-label-primary)' },
+      // ── 配置卡：字段行 / 反馈 ────────────────────────────────────────────
+      fieldLabelRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '6px' },
+      fieldUnit: { fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
+      actionRow: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+      successText: { margin: 0, fontSize: '12px', lineHeight: 1.6, color: 'var(--dsw-alias-state-success-primary)' },
+    }
+
+    Object.assign(styles, {
+      headerCard: { position: 'sticky', top: 0, zIndex: 3, background: 'var(--dsw-alias-bg-base)', padding: '4px 0 8px', display: 'flex', flexDirection: 'column', gap: '8px', borderBottom: '0.5px solid var(--dsw-alias-border-l1)' },
+      headerRow: { display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' },
+      headerSpacer: { flex: '1 1 auto' },
+      tabs: { display: 'flex', gap: '2px', flexWrap: 'wrap', background: 'var(--dsw-alias-interactive-bg-hover)', padding: '2px', borderRadius: '9px', alignSelf: 'flex-start' },
+      tab: { border: 'none', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', borderRadius: '7px', padding: '4px 12px', fontSize: '12.5px', lineHeight: '18px', cursor: 'pointer' },
+      tabActive: { background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-primary)', fontWeight: 600, boxShadow: '0 0.5px 2px rgba(0,0,0,.08)' },
+      rangeRow: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
+      rangeBtn: { border: '0.5px solid var(--dsw-alias-border-l2)', background: 'transparent', color: 'var(--dsw-alias-label-secondary)', borderRadius: '999px', padding: '1px 10px', fontSize: '11.5px', lineHeight: '19px', cursor: 'pointer' },
+      rangeBtnOn: { background: 'var(--dsw-alias-brand-primary)', borderColor: 'transparent', color: 'var(--dsw-alias-label-primary-foreground, #fff)' },
+      kpiBand: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(112px, 1fr))', background: 'var(--dsw-alias-bg-layer-1)', border: '0.5px solid var(--dsw-alias-border-l1)', borderRadius: '12px', overflow: 'hidden' },
+      kpiCard: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '1px', minWidth: 0 },
+      kpiCardDivider: { borderLeft: '0.5px solid var(--dsw-alias-border-l1)' },
+      kpiCardLabel: { fontSize: '10.5px', lineHeight: '15px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      kpiCardValue: { fontSize: '15.5px', lineHeight: '22px', fontWeight: 600, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' },
+      kpiCardSub: { fontSize: '10px', lineHeight: '14px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
+      billingBody: { display: 'flex', gap: '28px', alignItems: 'flex-start', flexWrap: 'wrap' },
+      billingTotal: { display: 'flex', flexDirection: 'column', gap: '3px', minWidth: '128px' },
+      billingTotalLabel: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
+      billingTotalValue: { fontSize: '27px', lineHeight: '34px', fontWeight: 600, color: 'var(--dsw-alias-label-primary)', fontVariantNumeric: 'tabular-nums' },
+      billingRows: { flex: '1 1 360px', minWidth: 0 },
+      billingRow: { display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 0.8fr)', gap: '12px', alignItems: 'center', padding: '4px 0', borderTop: '0.5px solid var(--dsw-alias-border-l1)' },
+      billingRowLabel: { fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      billingRowTokens: { fontSize: '11.5px', color: 'var(--dsw-alias-label-tertiary)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+      billingRowCost: { fontSize: '11.5px', color: 'var(--dsw-alias-label-primary)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+      billingNote: { margin: 0, fontSize: '10.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-tertiary)' },
+      chartWrap: { display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 },
+      chartBars: { display: 'flex', alignItems: 'flex-end', gap: '6px', height: '96px', paddingTop: '6px', overflowX: 'auto' },
+      chartBarCol: { flex: '1 1 0', minWidth: '14px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '3px', height: '100%', justifyContent: 'flex-end' },
+      chartBar: { width: '100%', maxWidth: '26px', borderRadius: '4px 4px 1px 1px', background: 'var(--dsw-alias-brand-primary)', minHeight: '2px', opacity: 0.88 },
+      chartBarZero: { background: 'var(--dsw-alias-interactive-bg-hover)' },
+      chartLabel: { fontSize: '9.5px', color: 'var(--dsw-alias-label-tertiary)', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' },
+      sessionList: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '8px' },
+      sessionCard: { textAlign: 'left', border: '0.5px solid var(--dsw-alias-border-l1)', background: 'transparent', borderRadius: '10px', padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '5px', cursor: 'pointer', color: 'inherit', minWidth: 0 },
+      sessionCardOn: { borderColor: 'var(--dsw-alias-brand-primary)' },
+      sessionTitle: { margin: 0, fontSize: '12.5px', fontWeight: 600, lineHeight: '18px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      sessionMeta: { fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+      sessionStats: { display: 'flex', gap: '10px', flexWrap: 'wrap', fontSize: '11px', color: 'var(--dsw-alias-label-secondary)', fontVariantNumeric: 'tabular-nums' },
+      trendBody: { display: 'flex', alignItems: 'flex-start', gap: '6px', minWidth: 0 },
+      trendAxis: { flex: 'none', width: '38px', height: '130px', boxSizing: 'border-box', paddingBottom: '18px', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', alignItems: 'flex-end', fontSize: '9.5px', lineHeight: '12px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums' },
+      trendScroll: { overflowX: 'auto', paddingBottom: '4px', flex: '1 1 auto', minWidth: 0 },
+      trendCols: { display: 'flex', alignItems: 'flex-end', gap: '3px', minHeight: '130px', minWidth: '100%', position: 'relative' },
+      trendGridLine: { position: 'absolute', left: 0, right: 0, borderTop: '0.5px solid var(--dsw-alias-border-l1)', pointerEvents: 'none' },
+      trendCol: { flex: '1 0 18px', maxWidth: '48px', height: '130px', boxSizing: 'border-box', paddingBottom: '18px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-end', gap: 0, position: 'relative', zIndex: 1 },
+      trendLabel: { position: 'absolute', left: 0, right: 0, bottom: 0, textAlign: 'center', fontSize: '9.5px', lineHeight: '12px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
+      trendPrompt: { width: '100%', borderRadius: '0 0 3px 3px', background: 'var(--dsw-static-blue-450)', minHeight: '2px' },
+      trendOutput: { width: '100%', borderRadius: '3px 3px 0 0', background: 'var(--dsw-static-green-400)', minHeight: '1px' },
+      trendMarker: { position: 'absolute', top: 0, bottom: '18px', left: 0, width: '2px', background: 'var(--dsw-alias-state-warn-primary)', opacity: 0.85, zIndex: 2, pointerEvents: 'none' },
+      trendMarkerDot: { position: 'absolute', top: '-2px', left: '-3px', width: '8px', height: '8px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)' },
+      trendBudgetLabel: { position: 'absolute', right: 0, top: '-14px', padding: '0 3px', background: 'var(--dsw-alias-bg-layer-1)', color: 'var(--dsw-alias-label-tertiary)', fontSize: '9px', lineHeight: '12px', whiteSpace: 'nowrap' },
+      trendLegendItem: { display: 'inline-flex', alignItems: 'center', gap: '5px', minWidth: 0 },
+      legendInline: { display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', fontSize: '11px', color: 'var(--dsw-alias-label-tertiary)' },
+      filterBar: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' },
+      eventList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: '0' },
+      eventItem: { display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '7px 0', borderTop: '0.5px solid var(--dsw-alias-border-l1)', minWidth: 0 },
+      eventKind: { flex: 'none', fontSize: '10px', fontWeight: 600, borderRadius: '4px', padding: '0 5px', lineHeight: '17px', color: 'var(--dsw-alias-label-secondary)', background: 'var(--dsw-alias-interactive-bg-hover)' },
+      eventMain: { flex: '1 1 auto', minWidth: 0, fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)', wordBreak: 'break-word' },
+      eventAside: { flex: 'none', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' },
+      searchInput: { width: '100%', boxSizing: 'border-box', border: '0.5px solid var(--dsw-alias-border-l2)', borderRadius: '8px', background: 'var(--dsw-alias-bg-base)', color: 'inherit', padding: '5px 9px', fontSize: '12px' },
+      linkAction: { marginLeft: 'auto', fontSize: '10.5px', color: 'var(--dsw-alias-label-tertiary)', cursor: 'pointer' },
+      banner: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', padding: '6px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' },
+      checkList: { listStyle: 'none', margin: 0, padding: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '6px' },
+      checkItem: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' },
+      insightList: { listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 0 },
+      insightItem: { display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '8px 0', borderTop: '0.5px solid var(--dsw-alias-border-l1)' },
+      insightText: { flex: '1 1 auto', fontSize: '11.5px', lineHeight: 1.55, color: 'var(--dsw-alias-label-secondary)' },
+      alertStrip: { display: 'flex', flexDirection: 'column', gap: '4px', padding: '7px 10px', borderRadius: '9px', border: '0.5px solid var(--dsw-alias-state-warn-primary)', background: 'var(--dsw-alias-bg-layer-2)' },
+      alertRow: { display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--dsw-alias-label-secondary)' },
+      alertDot: { width: '6px', height: '6px', borderRadius: '999px', background: 'var(--dsw-alias-state-warn-primary)', flex: 'none' },
+      compareGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '8px' },
+      compareRows: { display: 'flex', flexDirection: 'column', gap: 0 },
+      compareRow: { display: 'grid', gridTemplateColumns: 'minmax(90px, 1fr) minmax(0, 1fr) minmax(0, 1fr)', gap: '8px', padding: '5px 0', borderTop: '0.5px solid var(--dsw-alias-border-l1)', fontSize: '11.5px' },
+      compareValue: { textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: 'var(--dsw-alias-label-primary)' },
+      pricingRows: { display: 'flex', flexDirection: 'column', gap: '5px' },
+      pricingRow: { display: 'grid', gridTemplateColumns: 'minmax(120px, 1.6fr) repeat(4, minmax(52px, 0.7fr)) auto', gap: '5px', alignItems: 'center' },
+    // 每行价格下面的峰谷两档（可留空 = 全天同价）。
+    pricingItem: { display: 'flex', flexDirection: 'column', gap: '3px', padding: '5px 0', borderTop: '0.5px solid var(--dsw-alias-border-l1)' },
+    pricingBandRow: { display: 'grid', gridTemplateColumns: 'minmax(120px, 1.6fr) repeat(4, minmax(52px, 0.7fr))', gap: '5px', alignItems: 'center' },
+    pricingBandLabel: { fontSize: '10px', lineHeight: '14px', color: 'var(--dsw-alias-label-tertiary)' },
+      detailBox: { display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px 10px', borderRadius: '8px', background: 'var(--dsw-alias-bg-layer-2)' },
+      error: { margin: 0, fontSize: '11.5px', color: 'var(--dsw-alias-state-error-primary)' },
+      diffBox: { display: 'flex', flexDirection: 'column', gap: '1px', maxHeight: '220px', overflow: 'auto', border: '0.5px solid var(--dsw-alias-border-l1)', borderRadius: '8px', padding: '6px 8px', fontFamily: 'var(--dsw-font-mono, monospace)', fontSize: '10.5px', lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-word' },
+      diffRemove: { color: 'var(--dsw-alias-state-error-primary)' },
+      diffAdd: { color: 'var(--dsw-alias-state-success-primary)' },
+    })
+
+    // ── 基础视觉组件 ────────────────────────────────────────────────────────
+
+    /** 小号环形用量：规格与内置 ContextMeter 一致（14px、2px 描边）。 */
+    function ContextRing(props) {
+      const percent = Math.max(0, Math.min(100, Number(props.percent) || 0))
+      const radius = 5.5
+      const circumference = 2 * Math.PI * radius
+      return h(
+        'svg',
+        {
+          viewBox: '0 0 14 14',
+          width: 14,
+          height: 14,
+          'aria-hidden': true,
+          style: { flex: 'none' },
+          'data-embodiment-dock-ring': String(Math.round(percent)),
+        },
+        h('circle', { cx: 7, cy: 7, r: radius, fill: 'none', stroke: 'var(--dsw-alias-border-l3)', strokeWidth: 2 }),
+        h('circle', {
+          cx: 7,
+          cy: 7,
+          r: radius,
+          fill: 'none',
+          stroke: 'var(--dsw-alias-label-tertiary)',
+          strokeWidth: 2,
+          strokeLinecap: 'round',
+          strokeDasharray: `${(circumference * percent) / 100} ${circumference}`,
+          transform: 'rotate(-90 7 7)',
+        }),
+      )
+    }
+
+    /** 四色图例：色点 + 名称 + 右对齐的数值/占比。 */
+    function LegendGrid(props) {
+      const categories = Array.isArray(props.categories) ? props.categories : []
+      if (categories.length === 0) return null
+      return h(
+        'div',
+        { style: styles.legend },
+        categories.map((row) =>
+          h(
+            'div',
+            { key: row.key, style: styles.legendItem, 'data-embodiment-legend': row.key, title: `${row.label} · ${formatTokens(row.tokens)} ${props.tokensLabel || ''}` },
+            h('i', { style: { ...styles.dot, background: row.color } }),
+            h('span', { style: styles.legendName }, row.label),
+            h('span', { style: styles.legendValue }, `${compactTokens(row.tokens)} · ${formatPercent(row.share)}`),
+          ),
+        ),
+      )
+    }
+
+    function MeterBar(props) {
+      const percent = Math.max(0, Math.min(100, Number(props.percent) || 0))
+      const [grown, setGrown] = react.useState(false)
+      react.useEffect(() => {
+        setGrown(false)
+        const frame = requestAnimationFrame(() => setGrown(true))
+        return () => cancelAnimationFrame(frame)
+      }, [percent])
+      return h(
+        'div',
+        { style: styles.bar },
+        h('div', {
+          style: {
+            ...styles.barFill,
+            width: `${grown ? percent : 0}%`,
+            // 0% 时不画 2px 残留色块，空条就应该是空的。
+            minWidth: grown && percent > 0 ? '2px' : 0,
+            background: props.color || 'var(--dsw-alias-brand-primary)',
+            transition: 'width .7s cubic-bezier(.22,.61,.36,1)',
+          },
+        }),
+      )
+    }
+
+    // ── 卡片折叠状态（记忆到 localStorage，按卡片 id 存） ──────────────────
+    const COLLAPSED_STORAGE_KEY = 'agent-embodiment:collapsed:v1'
+
+    function readCollapsedMap() {
+      try {
+        if (typeof window === 'undefined' || !window.localStorage) return {}
+        const raw = window.localStorage.getItem(COLLAPSED_STORAGE_KEY)
+        const parsed = raw ? JSON.parse(raw) : null
+        return parsed && typeof parsed === 'object' ? parsed : {}
+      } catch {
+        return {}
+      }
+    }
+
+    function Card(props) {
+      const cardId = typeof props.id === 'string' ? props.id : null
+      const [collapsed, setCollapsed] = react.useState(() => Boolean(cardId && readCollapsedMap()[cardId]))
+      const t = props.t
+      const toggle = () => {
+        const next = !collapsed
+        setCollapsed(next)
+        if (!cardId) return
+        try {
+          if (typeof window === 'undefined' || !window.localStorage) return
+          const map = readCollapsedMap()
+          map[cardId] = next
+          window.localStorage.setItem(COLLAPSED_STORAGE_KEY, JSON.stringify(map))
+        } catch {}
+      }
+      return h(
+        'div',
+        { style: { ...styles.card, ...(props.style || {}) }, 'data-embodiment-card': cardId || undefined, 'data-embodiment-collapsed': collapsed ? '1' : '0' },
+        h(
+          'div',
+          { style: styles.cardHead },
+          cardId && typeof t === 'function'
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  style: styles.cardToggle,
+                  title: collapsed ? t('expand') : t('collapse'),
+                  'aria-label': collapsed ? t('expand') : t('collapse'),
+                  'aria-expanded': !collapsed,
+                  'data-embodiment-card-toggle': cardId,
+                  onClick: toggle,
+                },
+                h('span', { style: { display: 'inline-block', transform: collapsed ? 'none' : 'rotate(90deg)', transition: 'transform .15s ease' } }, '›'),
+              )
+            : null,
+          h('h3', { style: styles.cardTitle }, props.title),
+          props.sub !== undefined ? h('span', { style: styles.cardSub }, props.sub) : null,
+          props.action !== undefined ? props.action : null,
+        ),
+        collapsed ? null : props.children,
+      )
+    }
+
+    /** 异常信息转一行可显示的文本（抛出的不一定是 Error，message 也可能为空）。 */
+    function boundaryMessage(error) {
+      if (error && error.message !== undefined && error.message !== null) {
+        const text = String(error.message).trim()
+        return text || 'Error'
+      }
+      const text = String(error === undefined || error === null ? '' : error).trim()
+      return text || 'Error'
+    }
+
+    /**
+     * 卡片级错误边界。
+     *
+     * 宿主 renderer 只在每个 slot entry 外面套一层 ErrorBoundary：面板内部任何一张卡抛错，
+     * 整块面板会一起变空（四个 tab 全没了）。这里在面板内部按卡片再兜一层，某张卡渲染失败时
+     * 只把它换成一条可读的降级提示（带“重试”按钮），其余卡片与 tab 继续可用。
+     * 正常路径直接返回 children、不额外包 DOM，所以卡片布局与之前完全一致。
+     *
+     * 用 class 而不是函数组件：React 只有 class 才能实现 error boundary。
+     */
+    function makeCardBoundary(Base) {
+      return class CardBoundary extends Base {
+        constructor(props) {
+          super(props)
+          this.state = { failed: false, message: '' }
+          this.retry = this.retry.bind(this)
+        }
+
+        static getDerivedStateFromError(error) {
+          return { failed: true, message: boundaryMessage(error) }
+        }
+
+        /** 重试：清掉失败状态，让子树重新挂载一次；仍然失败会再次落到降级提示。 */
+        retry() {
+          this.setState({ failed: false, message: '' })
+        }
+
+        render() {
+          if (!this.state.failed) return this.props.children === undefined ? null : this.props.children
+          const t = this.props.t
+          const detail = typeof t === 'function'
+            ? String(t('cardFailed')).replace('{message}', this.state.message)
+            : `This card failed to render: ${this.state.message}`
+          return h('div', { style: styles.emptyState, role: 'alert', 'data-embodiment-card-error': '1' },
+            // 异常文本一律按纯文本渲染，不用 dangerouslySetInnerHTML。
+            h('p', { style: styles.error }, detail),
+            h('button', { type: 'button', style: styles.button, onClick: this.retry, 'data-embodiment-card-retry': '1' }, typeof t === 'function' ? t('retry') : 'Retry'),
+          )
+        }
+      }
+    }
+
+    // 宿主 react 是完整 React，正常走 class 边界；测试桩等裁剪过的 react 没有 Component，
+    // 退回「只渲染 children」的函数组件，保证模块能加载、面板照常显示（只是不再捕获卡内异常）。
+    const CardBoundary = typeof react.Component === 'function'
+      ? makeCardBoundary(react.Component)
+      : function CardBoundary(props) {
+        return props && props.children !== undefined ? props.children : null
+      }
+
+    // ── 数据 hooks ─────────────────────────────────────────────────────────
+    // 同一 URL 的 GET 请求在极短时间内合并：Overview 打开时 CtxPanel 的 useLive(/live)
+    // 与 CtxDock 的 fetchLive(/live) 会同时拉同一个会话，这里在飞行期去重，避免双拉。
+    const inflightJson = new Map()
+    const fetchJson = (path, options) => {
+      const key = `${options && options.method === 'POST' ? 'POST' : 'GET'}\u0000${path}`
+      const existing = inflightJson.get(key)
+      if (existing) return existing
+      const promise = fetch(path, { headers: { accept: 'application/json' }, ...(options || {}) })
+        .then(async (response) => {
+          // 服务端在 4xx/5xx 时会带 { error }；优先用它，别让用户看到光秃秃的 "HTTP 400"。
+          const payload = await response.json().catch(() => null)
+          if (!response.ok) {
+            const message = payload && typeof payload.error === 'string' && payload.error ? payload.error : `HTTP ${response.status}`
+            throw new Error(message)
+          }
+          return payload
+        })
+        .finally(() => {
+          // 完成后从 map 移除，避免长期占用内存；下一次请求重新建立。
+          setTimeout(() => inflightJson.delete(key), 0)
+        })
+      inflightJson.set(key, promise)
+      return promise
+    }
+
+    /** 写操作统一入口：POST JSON、解析响应、非 2xx 抛出服务端 error 文案。 */
+    const postJson = (path, body) => fetchJson(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body === undefined ? {} : body),
+    })
+
+    function useStatus(path) {
+      const [state, setState] = react.useState({ phase: 'loading' })
+      const load = react.useCallback(() => {
+        setState({ phase: 'loading' })
+        // fetchJson 已把 Response 解析成 JSON 对象，这里直接取 payload。
+        fetchJson(path)
+          .then((data) => setState({ phase: 'ready', data }))
+          .catch((error) => setState({ phase: 'error', message: String((error && error.message) || error) }))
+      }, [path])
+      react.useEffect(() => {
+        load()
+      }, [load])
+      return [state, load]
+    }
+
+    // ── 用量活动事件：会话内容变化（流式输出/发消息/切换会话）时通知刷新，2s 节流 ──
+    const usageListeners = new Set()
+    let usageTimer = null
+    let usageLast = 0
+    // 会话内容变化（流式输出）会触发一轮 live/inventory/analytics/insights/detail 请求，
+    // 3s 节流在「更新跟手」与「请求风暴」之间折中；空闲时 MutationObserver 不触发，不会轮询。
+    const USAGE_THROTTLE_MS = 3000
+    function emitUsageActivity() {
+      for (const listener of usageListeners) {
+        try {
+          listener()
+        } catch {}
+      }
+    }
+    function notifyUsageActivity() {
+      const now = Date.now()
+      const wait = Math.max(0, USAGE_THROTTLE_MS - (now - usageLast))
+      if (wait === 0) {
+        usageLast = now
+        emitUsageActivity()
+        return
+      }
+      if (usageTimer !== null) return
+      usageTimer = setTimeout(() => {
+        usageTimer = null
+        usageLast = Date.now()
+        emitUsageActivity()
+      }, wait)
+    }
+    function subscribeUsageActivity(listener) {
+      usageListeners.add(listener)
+      return () => usageListeners.delete(listener)
+    }
+    function useUsageActivity() {
+      const [tick, setTick] = react.useState(0)
+      react.useEffect(() => subscribeUsageActivity(() => setTick((value) => value + 1)), [])
+      return tick
+    }
+
+    /** Dock 浮层共用状态：开关、点外面/Esc 收起、触发按钮的 hover/展开样式。 */
+    function useDock() {
+      const [open, setOpen] = react.useState(false)
+      const [hovered, setHovered] = react.useState(false)
+      const rootRef = react.useRef(null)
+      react.useEffect(() => {
+        if (!open) return undefined
+        const onPointerDown = (event) => {
+          if (rootRef.current && !rootRef.current.contains(event.target)) setOpen(false)
+        }
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') setOpen(false)
+        }
+        document.addEventListener('pointerdown', onPointerDown)
+        document.addEventListener('keydown', onKeyDown)
+        return () => {
+          document.removeEventListener('pointerdown', onPointerDown)
+          document.removeEventListener('keydown', onKeyDown)
+        }
+      }, [open])
+      const triggerProps = {
+        type: 'button',
+        style: { ...meter.trigger, ...(hovered || open ? meter.triggerHover : null) },
+        'aria-haspopup': 'dialog',
+        'aria-expanded': open,
+        onClick: () => setOpen(!open),
+        onMouseEnter: () => setHovered(true),
+        onMouseLeave: () => setHovered(false),
+      }
+      return { open, setOpen, rootRef, triggerProps }
+    }
+
+    /** Dock 弹层骨架：标题/百分比/总量 + 内容 + 右下角动作。 */
+    function DockPanel(props) {
+      return h(
+        'div',
+        { style: meter.panel, role: 'dialog', 'aria-label': props.label, ...props.attrs },
+        h(
+          'div',
+          { style: meter.header },
+          h('span', { style: meter.headline }, props.title),
+          props.percent === undefined ? null : h('span', { style: meter.percent }, props.percent),
+          props.figures === undefined ? null : h('span', { style: meter.figures }, props.figures),
+        ),
+        props.children,
+        props.action
+          ? h(
+              'div',
+              { style: { marginTop: '8px', paddingTop: '8px', borderTop: '0.5px solid var(--dsw-alias-border-l1)', display: 'flex', justifyContent: 'flex-end' } },
+              props.action,
+            )
+          : null,
+      )
+    }
+
+    /** Dock 弹层明细行：色块 + 名称 + 数值。 */
+    function DockRow(props) {
+      return h(
+        'div',
+        { style: meter.row },
+        h('dt', null, props.color ? h('span', { style: { ...meter.swatch, background: props.color } }, null) : null, props.label),
+        h('dd', { style: meter.figures, title: props.title }, props.value),
+      )
+    }
+
+    // ── DSH 账号余额：remote.account 是可选服务，注入完成后再显示胶囊 ───────
+    let accountRemote = null
+    const accountSubscribers = new Set()
+    function publishAccountRemote(value) {
+      accountRemote = value
+      for (const subscriber of accountSubscribers) subscriber(value)
+    }
+    function useAccountRemote() {
+      const [value, setValue] = react.useState(accountRemote)
+      react.useEffect(() => {
+        accountSubscribers.add(setValue)
+        setValue(accountRemote)
+        return () => {
+          accountSubscribers.delete(setValue)
+        }
+      }, [])
+      return value
+    }
+
+    // ── 余额胶囊显示偏好：默认关闭，本机持久化 ───────────────────────────
+    const BALANCE_ENABLED_KEY = 'agent-embodiment:balance-enabled:v1'
+    const LEGACY_BALANCE_ENABLED_KEY = 'ctx-mon-and-con:balance-enabled:v1'
+    /** 常驻 dock 的最小重读间隔：官方无轮询，这里也只在触发点后跳过过密的读。 */
+    const BALANCE_READ_MIN_MS = 30000
+    const balanceEnabledSubscribers = new Set()
+    function readBalanceEnabled() {
+      try {
+        if (typeof window === 'undefined' || !window.localStorage) return false
+        return window.localStorage.getItem(BALANCE_ENABLED_KEY) === '1' || window.localStorage.getItem(LEGACY_BALANCE_ENABLED_KEY) === '1'
+      } catch {
+        return false
+      }
+    }
+    function setBalanceEnabled(value) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.setItem(BALANCE_ENABLED_KEY, value ? '1' : '0')
+        }
+      } catch {}
+      for (const subscriber of balanceEnabledSubscribers) subscriber(Boolean(value))
+    }
+    function useBalanceEnabled() {
+      const [enabled, setEnabled] = react.useState(readBalanceEnabled)
+      react.useEffect(() => {
+        const sync = (value) => setEnabled(value === undefined ? readBalanceEnabled() : Boolean(value))
+        balanceEnabledSubscribers.add(sync)
+        sync()
+        const onStorage = (event) => {
+          if (event.key === BALANCE_ENABLED_KEY || event.key === LEGACY_BALANCE_ENABLED_KEY) sync()
+        }
+        window.addEventListener('storage', onStorage)
+        return () => {
+          balanceEnabledSubscribers.delete(sync)
+          window.removeEventListener('storage', onStorage)
+        }
+      }, [])
+      return enabled
+    }
+
+    /** 余额弹层：充值/赠金分项 + 构成条 + 充值入口，布局对齐内置 ContextMeter 面板。 */
+    function BalancePanel(props) {
+      const t = props.t
+      const snapshot = props.snapshot
+      const links = props.links || {}
+      const ready = Boolean(snapshot && snapshot.status === 'ready')
+      const toppedWallets = ready ? snapshot.value || [] : []
+      const bonusWallets = ready ? snapshot.bonusWallets || [] : []
+      const text = (wallets) => wallets.map((wallet) => formatWalletAmount(wallet.balance, wallet.currency)).join(' / ') || '—'
+      const currencies = new Set([...toppedWallets, ...bonusWallets].map((wallet) => wallet.currency))
+      const sum = (wallets) => wallets.reduce((total, wallet) => total + (Number(wallet.balance) || 0), 0)
+      const toppedAmount = sum(toppedWallets)
+      const bonusAmount = sum(bonusWallets)
+      const totalAmount = toppedAmount + bonusAmount
+      // 账号接口失败时官方给的是"前往开放平台查看"链接，而不是一句死文案。
+      const failure = props.failed
+        ? links.usageUrl
+          ? h('a', { href: links.usageUrl, target: '_blank', rel: 'noreferrer', style: { color: 'inherit' } }, t('balanceCheckPlatform'))
+          : t('balanceUnavailable')
+        : snapshot === null ? t('balanceSignedOut') : t('balanceLoading')
+      return h(
+        DockPanel,
+        {
+          label: t('balance'),
+          title: t('balance'),
+          percent: ready ? walletSummary(snapshot) || '—' : '—',
+          attrs: { 'data-embodiment-balance-panel': '1' },
+          action: h(
+            'div',
+            { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+            links.topUpUrl
+              ? h('a', { href: links.topUpUrl, target: '_blank', rel: 'noreferrer', style: { ...styles.copyBtn, display: 'inline-flex', alignItems: 'center', textDecoration: 'none' } }, t('balanceTopUp'))
+              : null,
+            h('button', { type: 'button', style: styles.copyBtn, title: t('balanceRefresh'), onClick: () => props.read(true) }, t('refresh')),
+          ),
+        },
+        ready && currencies.size <= 1 && totalAmount > 0
+          ? h(
+              'div',
+              { style: meter.bar },
+              toppedAmount > 0 ? h('div', { style: { ...meter.segment, width: `${(toppedAmount / totalAmount) * 100}%`, background: 'var(--dsw-static-blue-450)' } }) : null,
+              bonusAmount > 0 ? h('div', { style: { ...meter.segment, width: `${(bonusAmount / totalAmount) * 100}%`, background: '#a78bfa' } }) : null,
+            )
+          : null,
+        ready
+          ? h(
+              'dl',
+              { style: meter.rows },
+              h(DockRow, { color: 'var(--dsw-static-blue-450)', label: t('balanceTopped'), value: text(toppedWallets) }),
+              h(DockRow, { color: '#a78bfa', label: t('balanceBonus'), value: text(bonusWallets) }),
+            )
+          : h('p', { style: { margin: '6px 0 0', fontSize: '11px', opacity: 0.7 } }, failure),
+      )
+    }
+
+    /** 输入框下沿的只读余额胶囊；点击展开充值/赠金明细。 */
+    function BalanceDock(props) {
+      const t = props.t
+      const remote = useAccountRemote()
+      const balanceEnabled = useBalanceEnabled()
+      const [snapshot, setSnapshot] = react.useState(undefined)
+      const [account, setAccount] = react.useState(null)
+      const [failed, setFailed] = react.useState(false)
+      const { open, rootRef, triggerProps } = useDock()
+      const usageTick = useUsageActivity()
+      const lastReadRef = react.useRef(0)
+
+      // 登录态与充值/用量链接：与余额分开取，未登录也能拿到链接。
+      const readAccount = react.useCallback(() => {
+        if (!remote) return undefined
+        let cancelled = false
+        remote.getState().then((result) => {
+          if (!cancelled && result && result.ok) setAccount(result.value ?? null)
+        }).catch(() => {})
+        return () => {
+          cancelled = true
+        }
+      }, [remote])
+
+      // 常驻 dock 不做轮询：可见性/流式结束只触发，30s 内直接跳过；展开弹层和点刷新强制读。
+      const read = react.useCallback((force) => {
+        if (!remote || !balanceEnabled) return undefined
+        const now = Date.now()
+        if (!force && now - lastReadRef.current < BALANCE_READ_MIN_MS) return undefined
+        lastReadRef.current = now
+        let cancelled = false
+        remote.getBalance(props.meta()).then((result) => {
+          if (cancelled) return
+          const value = result && result.ok ? result.value ?? null : undefined
+          if (value === undefined || value.status === 'failed') {
+            setFailed(true)
+            setSnapshot(undefined)
+            return
+          }
+          setFailed(false)
+          setSnapshot(value)
+          if (value === null) readAccount()
+        }).catch(() => {
+          if (cancelled) return
+          setFailed(true)
+          setSnapshot(undefined)
+        })
+        return () => {
+          cancelled = true
+        }
+      }, [remote, props.meta, balanceEnabled, readAccount])
+
+      react.useEffect(() => readAccount(), [readAccount])
+      react.useEffect(() => read(true), [read])
+      react.useEffect(() => {
+        const onVisible = () => {
+          if (document.visibilityState === 'visible') read()
+        }
+        document.addEventListener('visibilitychange', onVisible)
+        window.addEventListener('focus', onVisible)
+        return () => {
+          document.removeEventListener('visibilitychange', onVisible)
+          window.removeEventListener('focus', onVisible)
+        }
+      }, [read])
+      // 流式输出结束后再刷新一次余额，避免每个 DOM 变化都打账号接口。
+      react.useEffect(() => {
+        if (usageTick === 0) return undefined
+        const timer = setTimeout(() => read(), 5000)
+        return () => clearTimeout(timer)
+      }, [usageTick, read])
+      // 展开弹层时拉一次最新余额；点外面或按 Esc 收起。
+      react.useEffect(() => {
+        if (open) read(true)
+      }, [open, read])
+
+      if (!remote || !balanceEnabled) return null
+      const ready = Boolean(snapshot && snapshot.status === 'ready')
+      const total = ready ? (walletSummary(snapshot) || '—') : '—'
+      const topped = ready ? ((snapshot.value || []).map((wallet) => formatWalletAmount(wallet.balance, wallet.currency)).join(' / ') || '—') : null
+      const bonus = ready ? (snapshot.bonusWallets || []).filter((wallet) => Number(wallet.balance) > 0).map((wallet) => formatWalletAmount(wallet.balance, wallet.currency)).join(' / ') : ''
+      const detail = ready
+        ? [`${t('balanceTopped')} ${topped}`, bonus ? `${t('balanceBonus')} ${bonus}` : ''].filter(Boolean).join(' · ')
+        : failed ? t('balanceUnavailable') : snapshot === null ? t('balanceSignedOut') : t('balanceLoading')
+      return h(
+        'span',
+        { ref: rootRef, style: meter.root },
+        h(
+          'button',
+          {
+            ...triggerProps,
+            title: detail,
+            'aria-label': `${t('balance')} ${total}`,
+            'data-embodiment-balance': '1',
+          },
+          h('span', null, t('balance')),
+          h('span', { style: { color: 'var(--dsw-alias-label-primary)', fontVariantNumeric: 'tabular-nums' } }, total),
+        ),
+        open ? h(BalancePanel, { t, snapshot, failed, links: account && account.links, read }) : null,
+      )
+    }
+
+    /** 打开页面时同步一次 /live；重新可见/窗口聚焦或点刷新时再同步，不做定时轮询。 */
+    function useLive(path, refreshKey, enabled = true) {
+      const [state, setState] = react.useState({ data: null, at: null, error: null })
+      const lastPathRef = react.useRef(path)
+      const pathRef = react.useRef(path)
+      pathRef.current = path
+      const reload = react.useCallback(() => {
+        const requestedPath = path
+        fetchJson(path)
+          .then((payload) => {
+            if (pathRef.current !== requestedPath) return
+            if (payload && payload.ok) setState({ data: payload, at: new Date().toISOString(), error: null })
+            else throw new Error('invalid payload')
+          })
+          .catch((error) => {
+            if (pathRef.current !== requestedPath) return
+            setState((previous) => ({ ...previous, error: String((error && error.message) || error) }))
+          })
+      }, [path])
+      // 切会话/切详情时先清掉旧 payload，避免新请求返回前把上一个会话的数据画到新标题下。
+      react.useEffect(() => {
+        if (lastPathRef.current === path) return
+        lastPathRef.current = path
+        setState({ data: null, at: null, error: null })
+      }, [path])
+      react.useEffect(() => {
+        if (!enabled) return undefined
+        reload()
+        const onVisible = () => {
+          if (document.visibilityState === 'visible') reload()
+        }
+        document.addEventListener('visibilitychange', onVisible)
+        window.addEventListener('focus', onVisible)
+        return () => {
+          document.removeEventListener('visibilitychange', onVisible)
+          window.removeEventListener('focus', onVisible)
+        }
+      }, [reload, refreshKey, enabled])
+      return [state, reload]
+    }
+
+    // ── 输入框下方指示器：与内置 ContextMeter 同排版，点击弹出小明细 ────────
+    /** 从 dock 弹层跳到完整 ctx 页面（点侧栏同名入口）。 */
+    function openCtxPanelPage() {
+      try {
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], a'))
+        const target = candidates.find((element) => {
+          const label = (element.getAttribute('aria-label') || '').trim()
+          const text = (element.textContent || '').replace(/\s+/g, ' ').trim()
+          return ['embody', 'ctx', 'context', '上下文'].includes(label) || ['embody', 'ctx', 'context', '上下文'].includes(text)
+        })
+        if (target) {
+          target.click()
+          return true
+        }
+      } catch {}
+      return false
+    }
+
+    function CtxDock(props) {
+      const t = props.t
+      const selectedSession = useCurrentSession()
+      const sessionId = props.sessionId || (props.runtime && props.runtime.sessionId) || selectedSession || undefined
+      const [data, setData] = react.useState(null)
+      const { open, setOpen, rootRef, triggerProps } = useDock()
+      const usageTick = useUsageActivity()
+      const sessionRef = react.useRef(sessionId)
+      sessionRef.current = sessionId
+
+      const fetchLive = react.useCallback(() => {
+        if (!sessionId) return
+        const requestedSession = sessionId
+        fetchJson(`${STATUS_PATH}/live?sessionId=${encodeURIComponent(String(sessionId))}`)
+          .then((payload) => {
+            if (sessionRef.current !== requestedSession) return
+            if (payload && payload.ok) setData(payload)
+          })
+          .catch(() => {})
+      }, [sessionId])
+
+      // 打开会话时同步一次触发器；随后补一次延迟同步（等首次装配完成），窗口重新可见/聚焦时也同步。
+      // 不是定时轮询：只在挂载、会话变化、可见性变化时各取一次。
+      react.useEffect(() => {
+        setData(null)
+        fetchLive()
+        const timer = setTimeout(fetchLive, 4000)
+        const onVisible = () => {
+          if (document.visibilityState === 'visible') fetchLive()
+        }
+        document.addEventListener('visibilitychange', onVisible)
+        window.addEventListener('focus', onVisible)
+        return () => {
+          clearTimeout(timer)
+          document.removeEventListener('visibilitychange', onVisible)
+          window.removeEventListener('focus', onVisible)
+        }
+      }, [fetchLive])
+
+      // 点开浮层时再拉一次最新值。
+      react.useEffect(() => {
+        if (open) fetchLive()
+      }, [open, fetchLive])
+
+      // 会话内容变化（节流后）自动刷新触发器。
+      react.useEffect(() => {
+        if (usageTick > 0) fetchLive()
+      }, [usageTick, fetchLive])
+
+      const budget = data && typeof data.budget === 'number' ? data.budget : null
+      const used = data && typeof data.used === 'number' ? data.used : null
+      const compacting = Boolean(data && data.compacting)
+      const budgetText = budget === null ? '—' : formatTokens(budget)
+      const budgetShort = budget === null ? '—' : compactTokens(budget)
+      const usedShort = used === null ? '—' : compactTokens(used)
+      const remaining = used === null || budget === null ? null : Math.max(0, budget - used)
+      // 与内置 ContextMeter 同一读法：环形 + 百分比。分母是插件为本会话配置的
+      // 上下文上限（含会话级覆盖），不是模型窗口；token 构成仍由官方指示器负责。
+      const percent = used === null || budget === null || budget <= 0 ? null : Math.min(100, Math.round((used / budget) * 100))
+      const percentText = percent === null ? null : `${percent}%`
+      const label = compacting
+        ? `${t('pluginContext')} · ${t('compacting')}`
+        : percent === null
+          ? `${t('pluginContext')} ${budgetShort}`
+          : `${t('pluginContext')} ${percentText}`
+      const aria = percent === null
+        ? `${t('pluginContext')} ${budgetText}`
+        : t('pluginContextAria').replace('{percent}', percentText)
+
+      return h(
+        'span',
+        { ref: rootRef, style: meter.root },
+        h(
+          'button',
+          {
+            ...triggerProps,
+            'aria-label': aria,
+            title: `${aria} · ${usedShort} / ${budgetShort}${props.controlActive ? ` · ${t('controlOn')}` : ` · ${t('controlOff')}`}`,
+            'data-embodiment-dock': '1',
+            'data-embodiment-dock-percent': percent === null ? '' : String(percent),
+          },
+          h(ContextRing, { percent: percent === null ? 0 : percent }),
+          h('span', null, label),
+          props.controlActive
+            ? null
+            : h('span', {
+                'data-embodiment-dock-warning': '1',
+                title: t('controlOff'),
+                style: { marginLeft: '2px', color: 'var(--dsw-alias-state-warn-primary)', fontSize: '11px', lineHeight: 1 },
+              }, '⚠'),
+        ),
+        open
+          ? h(
+              DockPanel,
+              {
+                label: t('pluginContext'),
+                title: t('pluginContext'),
+                percent: percentText === null ? undefined : percentText,
+                figures: `${usedShort} / ${budgetShort}`,
+                action: h(
+                  'button',
+                  { type: 'button', style: styles.copyBtn, 'data-embodiment-open-panel': '1', onClick: () => { setOpen(false); openCtxPanelPage() } },
+                  t('openPanel'),
+                ),
+              },
+              h(
+                'dl',
+                { style: meter.rows },
+                h(DockRow, { label: t('used'), value: `${usedShort} ${t('tokens')}`, title: used === null ? '—' : `${formatTokens(used)} ${t('tokens')}` }),
+                h(DockRow, { label: t('budgetLimit'), value: `${budgetShort} ${t('tokens')}`, title: `${budgetText} ${t('tokens')}` }),
+                h(DockRow, { label: t('remaining'), value: remaining === null ? '—' : `${compactTokens(remaining)} ${t('tokens')}`, title: remaining === null ? '—' : `${formatTokens(remaining)} ${t('tokens')}` }),
+                h(DockRow, { label: t('control'), value: props.controlActive ? t('controlOn') : t('controlOff') }),
+                h('p', { style: { margin: '6px 0 0', fontSize: '11px', opacity: 0.7 } }, t('pluginContextHint')),
+              ),
+            )
+          : null,
+      )
+    }
+
+    // ── 面板内部区块 ───────────────────────────────────────────────────────
+    /** 本会话工具 / 提示词 section 清单：两级折叠 + 会话/全局开关 + 展开看原文。 */
+    function InventoryCard(props) {
+      const t = props.t
+      const data = props.data || {}
+      const sources = (data.inventory && data.inventory.sources) || {}
+      const sourceOf = (name) => (sources.sections && sources.sections[name]) || null
+      const inventory = data.inventory
+      const disabledSessionTools = Array.isArray(data.disabledSessionTools) ? data.disabledSessionTools : []
+      const disabledSessionPrompts = Array.isArray(data.disabledSessionPrompts) ? data.disabledSessionPrompts : []
+      const disabledGlobalTools = Array.isArray(data.disabledTools) ? data.disabledTools : []
+      const [open, setOpen] = react.useState({ tools: false, prompts: false })
+      const [onlyEnabled, setOnlyEnabled] = react.useState(false)
+      const autoOpenRef = react.useRef(false)
+      const [expanded, setExpanded] = react.useState({})
+      const [copied, setCopied] = react.useState(null)
+      const [pending, setPending] = react.useState(null)
+      const [busy, setBusy] = react.useState(null)
+      const [editDraft, setEditDraft] = react.useState(null)
+      const [promptSave, setPromptSave] = react.useState(null)
+      const [promptBusy, setPromptBusy] = react.useState(false)
+      const [extraDraft, setExtraDraft] = react.useState(null)
+      const [extraBusy, setExtraBusy] = react.useState(false)
+      const [extraDeletePending, setExtraDeletePending] = react.useState(null)
+      const [restorePending, setRestorePending] = react.useState(false)
+      const [localEdits, setLocalEdits] = react.useState({})
+      const [notice, setNotice] = react.useState(null)
+      const activeId = props.sessionId || data.sessionId || null
+
+      // 会话切换时丢弃上一会话的草稿/展开/确认态，避免把 A 会话的编辑带到 B 会话。
+      react.useEffect(() => {
+        setExpanded({})
+        setCopied(null)
+        setPending(null)
+        setBusy(null)
+        setEditDraft(null)
+        setPromptSave(null)
+        setExtraDraft(null)
+        setExtraDeletePending(null)
+        setRestorePending(false)
+        setLocalEdits({})
+        setNotice(null)
+      }, [activeId])
+
+      const controlReady = props.controlActive !== false
+      const requireControl = () => {
+        if (controlReady) return true
+        setNotice(t('controlRequired'))
+        return false
+      }
+
+      // 全局 postJson 已按非 2xx 抛出服务端 error；这里再兜一层 `{ ok: false }`（旧接口约定）。
+      const requireOk = (payload) => {
+        if (payload && payload.ok === false) throw new Error(payload.error || t('saveFailed'))
+        return payload || {}
+      }
+      const promptFailure = (failure) => setNotice(`${t('saveFailed')}: ${String((failure && failure.message) || failure)}`)
+
+      const post = (body) => {
+        if (!requireControl()) return
+        setBusy(body)
+        postJson(`${STATUS_PATH}/inventory/toggle`, body)
+          .then((payload) => payload || {})
+          .then(() => {
+            setBusy(null)
+            setTimeout(() => {
+              if (typeof props.reload === 'function') props.reload()
+            }, 900)
+          })
+          .catch(() => setBusy(null))
+      }
+
+      const toggle = (kind, name, layer, enabled) => {
+        if (enabled) {
+          post({ kind, name, layer, enabled: true, ...(layer === 'session' && props.sessionId ? { sessionId: props.sessionId } : {}) })
+          return
+        }
+        setPending({ kind, name, layer })
+      }
+
+      const confirm = () => {
+        if (!pending) return
+        post({ ...pending, enabled: false, ...(pending.layer === 'session' && props.sessionId ? { sessionId: props.sessionId } : {}) })
+        setPending(null)
+      }
+
+      const restore = () => {
+        if (!requireControl()) return
+        postJson(`${STATUS_PATH}/inventory/reset`, { layer: 'all' })
+          .then(requireOk)
+          .then(() => {
+            setRestorePending(false)
+            setNotice(null)
+            setTimeout(() => props.reload && props.reload(), 1800)
+          })
+          .catch((failure) => {
+            setRestorePending(false)
+            promptFailure(failure)
+          })
+      }
+
+      const copy = (key, text) => {
+        const done = () => {
+          setCopied(key)
+          setTimeout(() => setCopied(null), 1200)
+        }
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          navigator.clipboard.writeText(text).then(done).catch(done)
+        } else done()
+      }
+
+      const postPrompt = (suffix, body) => {
+        if (!requireControl()) return
+        setPromptBusy(true)
+        postJson(`${STATUS_PATH}/inventory/prompt${suffix}`, body)
+          .then(requireOk)
+          .then(() => {
+            setPromptBusy(false)
+            setEditDraft(null)
+            setPromptSave(null)
+            if (suffix === '') { setLocalEdits((prev) => ({ ...prev, [body.name]: body.text })); setNotice(t('savedGlobal')) }
+            else if (body && typeof body.name === 'string') setLocalEdits((prev) => { const next = { ...prev }; delete next[body.name]; return next })
+            else setLocalEdits({})
+            setTimeout(() => props.reload && props.reload(), 1200)
+          })
+          .catch((failure) => {
+            setPromptBusy(false)
+            promptFailure(failure)
+          })
+      }
+
+      const postSessionPrompt = (name, text) => {
+        if (!requireControl()) return
+        setPromptBusy(true)
+        postJson(`${STATUS_PATH}/inventory/prompt/session`, { name, text, ...(props.sessionId ? { sessionId: props.sessionId } : {}) })
+          .then(requireOk)
+          .then(() => {
+            setPromptBusy(false)
+            setEditDraft(null)
+            setPromptSave(null)
+            setLocalEdits((prev) => ({ ...prev, [name]: text }))
+            setNotice(t('savedSession'))
+            setTimeout(() => props.reload && props.reload(), 800)
+          })
+          .catch((failure) => {
+            setPromptBusy(false)
+            promptFailure(failure)
+          })
+      }
+
+      const postSessionPromptReset = (name) => {
+        if (!requireControl()) return
+        setPromptBusy(true)
+        postJson(`${STATUS_PATH}/inventory/prompt/session/reset`, { name, ...(props.sessionId ? { sessionId: props.sessionId } : {}) })
+          .then(requireOk)
+          .then(() => {
+            setPromptBusy(false)
+            setLocalEdits((prev) => {
+              const next = { ...prev }
+              delete next[name]
+              return next
+            })
+            setNotice(null)
+            setTimeout(() => props.reload && props.reload(), 800)
+          })
+          .catch((failure) => {
+            setPromptBusy(false)
+            promptFailure(failure)
+          })
+      }
+
+      const postExtraPrompt = (name, text, placement = 'system') => {
+        if (!requireControl()) return
+        setExtraBusy(true)
+        postJson(`${STATUS_PATH}/inventory/extra-prompt`, { name, text, placement })
+          .then(requireOk)
+          .then((payload) => {
+            setExtraBusy(false)
+            if (!payload || !payload.ok) {
+              setNotice((payload && payload.error) || t('inventoryLoadFailed'))
+              return
+            }
+            setExtraDraft(null)
+            setPromptSave(null)
+            setEditDraft(null)
+            setNotice(t('extraPromptSaved'))
+            setTimeout(() => props.reload && props.reload(), 900)
+          })
+          .catch((failure) => {
+            setExtraBusy(false)
+            promptFailure(failure)
+          })
+      }
+
+      const postExtraPromptReset = (name) => {
+        setExtraBusy(true)
+        postJson(`${STATUS_PATH}/inventory/extra-prompt/reset`, { name })
+          .then(requireOk)
+          .then(() => {
+            setExtraBusy(false)
+            setExtraDeletePending(null)
+            setNotice(null)
+            setTimeout(() => props.reload && props.reload(), 900)
+          })
+          .catch((failure) => {
+            setExtraBusy(false)
+            promptFailure(failure)
+          })
+      }
+
+      const switchNode = (kind, name, layer, enabled) => {
+        const key = `${kind}:${name}:${layer}`
+        const confirming = pending && pending.kind === kind && pending.name === name && pending.layer === layer
+        const working = busy && busy.kind === kind && busy.name === name && busy.layer === layer
+        if (confirming) {
+          return h(
+            'span',
+            { style: { display: 'inline-flex', gap: '4px', alignItems: 'center' } },
+            h('button', { type: 'button', style: styles.copyBtn, onClick: confirm, 'data-embodiment-confirm': '1' }, t('confirm')),
+            h('button', { type: 'button', style: styles.copyBtn, onClick: () => setPending(null) }, t('cancel')),
+          )
+        }
+        return h(
+          'button',
+          {
+            type: 'button',
+            role: 'switch',
+            'aria-checked': enabled,
+            'data-embodiment-switch': key,
+            title: `${t(layer === 'global' ? 'globalSwitch' : 'sessionSwitch')}${enabled ? ' ✓' : ''}`,
+            style: {
+              width: '30px',
+              height: '16px',
+              borderRadius: '999px',
+              border: 'none',
+              padding: '1px',
+              cursor: working ? 'wait' : 'pointer',
+              background: enabled ? 'var(--dsw-static-green-500)' : 'var(--dsw-alias-interactive-bg-hover)',
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: enabled ? 'flex-end' : 'flex-start',
+              transition: 'background .15s ease',
+              opacity: working ? 0.5 : 1,
+            },
+            onClick: () => toggle(kind, name, layer, !enabled),
+          },
+          h('span', { style: { width: '14px', height: '14px', borderRadius: '50%', background: '#fff', opacity: enabled ? 1 : 0.85 } }),
+        )
+      }
+
+      const chevron = (isOpen) => h('span', { style: { display: 'inline-block', width: '10px', transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s ease' } }, '›')
+
+      const details = (key, text, extra) => {
+        const openKey = expanded[key]
+        if (!openKey) return null
+        return h(
+          'div',
+          { style: styles.detailBox },
+          extra || null,
+          h(
+            'div',
+            { style: styles.detailHead },
+            h('span', { style: styles.cardSub }, t('copy')),
+            h('button', { type: 'button', style: styles.copyBtn, onClick: () => copy(key, text) }, copied === key ? t('copied') : t('copy')),
+          ),
+          h('pre', { style: styles.pre, 'data-embodiment-detail': key }, text),
+        )
+      }
+
+      const tools = inventory && Array.isArray(inventory.tools) ? inventory.tools.slice() : []
+      for (const name of [...disabledSessionTools, ...disabledGlobalTools]) {
+        if (!tools.some((tool) => tool.name === name)) tools.push({ name, tokens: null })
+      }
+      const sections = inventory && Array.isArray(inventory.sections) ? inventory.sections.slice() : []
+      for (const name of disabledSessionPrompts) {
+        if (!sections.some((section) => section.name === name)) sections.push({ name, tokens: null, text: '' })
+      }
+      const extraPrompts = data.extraPrompts && typeof data.extraPrompts === 'object' ? data.extraPrompts : {}
+      const extraPromptPlacements = data.extraPromptPlacements && typeof data.extraPromptPlacements === 'object' ? data.extraPromptPlacements : {}
+      for (const [name, text] of Object.entries(extraPrompts)) {
+        const sectionName = name.startsWith('agent-embodiment:extra:') ? name : `agent-embodiment:extra:${name}`
+        const placement = extraPromptPlacements[name] === 'user' ? 'user' : 'system'
+        const existing = sections.find((section) => section.name === sectionName)
+        if (existing) {
+          existing.extra = true
+          existing.extraName = name
+          existing.extraPlacement = placement
+        } else {
+          sections.push({
+            name: sectionName,
+            extraName: name,
+            extra: true,
+            extraPlacement: placement,
+            tokens: Math.ceil(String(text).length / 4),
+            text: String(text),
+            originalText: String(text),
+            overridden: true,
+            globalOverridden: true,
+          })
+        }
+      }
+
+      const enabledToolName = (name) => !disabledSessionTools.includes(name) && !disabledGlobalTools.includes(name)
+      const enabledPromptName = (name) => !disabledSessionPrompts.includes(name)
+      const enabledTools = tools.filter((tool) => enabledToolName(tool.name))
+      const enabledSections = sections.filter((section) => enabledPromptName(section.name))
+      const visibleTools = onlyEnabled ? enabledTools : tools
+      const visibleSections = onlyEnabled ? enabledSections : sections
+
+      // 内容少时默认展开，内容多时默认折叠；用户手动点过之后不再自动改变。
+      react.useEffect(() => {
+        if (autoOpenRef.current || !inventory) return
+        autoOpenRef.current = true
+        setOpen({ tools: tools.length > 0 && tools.length <= 6, prompts: sections.length > 0 && sections.length <= 6 })
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [inventory])
+
+      const toolRow = (tool) => {
+        const key = `tool:${tool.name}`
+        const schemaText = tool.parameters ? JSON.stringify(tool.parameters, null, 2) : ''
+        const isOpen = Boolean(expanded[key])
+        const toolOff = !enabledToolName(tool.name)
+        return h(
+          'li',
+          { key, style: styles.inventoryItem },
+          h(
+            'div',
+            { style: styles.inventoryRow },
+            h(
+              'button',
+              { type: 'button', style: styles.inventoryHead, 'data-embodiment-expand': key, 'aria-expanded': isOpen, onClick: () => setExpanded({ ...expanded, [key]: !isOpen }) },
+              chevron(isOpen),
+              h('span', { style: styles.inventoryName }, tool.name),
+              tool.tokens !== null && tool.tokens !== undefined ? h('span', { style: styles.cardSub }, `~${compactTokens(tool.tokens)} ${t('tokensShort')}`) : null,
+            ),
+            h(
+              'span',
+              { style: { display: 'inline-flex', gap: '8px', alignItems: 'center', flex: 'none' } },
+              h('span', { style: styles.cardSub }, t('sessionSwitch')), switchNode('tool', tool.name, 'session', !disabledSessionTools.includes(tool.name)),
+              h('span', { style: styles.cardSub }, t('globalSwitch')), switchNode('tool', tool.name, 'global', !disabledGlobalTools.includes(tool.name)),
+            ),
+          ),
+          toolOff
+            ? h('p', { style: styles.cardSub, 'data-embodiment-tool-disabled-impact': tool.name, title: t('toolDisableWarning') },
+                tool.tokens !== null && tool.tokens !== undefined
+                  ? t('toolDisabledImpact').replace('{tokens}', compactTokens(tool.tokens))
+                  : t('toolDisabledImpactUnknown'))
+            : null,
+          isOpen
+            ? details(
+                key,
+                tool.description || '',
+                schemaText
+                  ? h(
+                      'div',
+                      { key: 'schema', style: { display: 'flex', flexDirection: 'column', gap: '4px' } },
+                      h(
+                        'div',
+                        { style: styles.detailHead },
+                        h('span', { style: styles.cardSub }, t('parameters')),
+                        h('button', { type: 'button', style: styles.copyBtn, onClick: () => copy(`${key}:schema`, schemaText) }, copied === `${key}:schema` ? t('copied') : t('copy')),
+                      ),
+                      h('pre', { style: styles.pre, 'data-embodiment-schema': key }, schemaText),
+                    )
+                  : null,
+              )
+            : null,
+        )
+      }
+
+      const promptRow = (section) => {
+        const key = `prompt:${section.name}`
+        const isExtra = Boolean(section.extra)
+        const displayName = isExtra ? (section.extraName || section.name) : section.name
+        const extraPlacement = section.extraPlacement === 'user' ? 'user' : 'system'
+        const extraBadge = extraPlacement === 'user' ? t('extraPromptUserBadge') : t('extraPromptSystemBadge')
+        const isOpen = Boolean(expanded[key])
+        const editing = editDraft && editDraft.name === section.name
+        const hasLocal = Object.prototype.hasOwnProperty.call(localEdits, section.name)
+        const effectiveText = hasLocal ? localEdits[section.name] : section.text || ''
+        const dirty = isExtra || hasLocal || section.overridden || (section.originalText !== undefined && section.originalText !== section.text)
+        const unchanged = !editDraft || editDraft.text === effectiveText
+        const editorNode = editing
+          ? h('textarea', {
+              style: styles.promptEditor,
+              rows: 8,
+              value: editDraft.text,
+              'data-embodiment-prompt-editor': section.name,
+              onChange: (event) => setEditDraft({ ...editDraft, text: event.target.value }),
+            })
+          : h('div', { style: styles.detailBox },              h('div', { style: styles.detailHead },
+                h('span', { style: styles.cardSub }, isExtra ? `${t('extraLabel')} · ${extraBadge}` : dirty ? (section.sessionOverridden ? t('sessionOverridden') : t('globalOverridden')) : t('editHint')),
+                h('span', { style: { ...styles.cardSub, fontFamily: 'ui-monospace, monospace', maxWidth: '46%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: sourceOf(section.name) || t('sourceUnknown') }, `${t('source')}: ${sourceOf(section.name) || t('sourceUnknown')}`),
+                h('span', { style: { display: 'inline-flex', gap: '6px' } },
+                  h('button', { type: 'button', style: styles.copyBtn, 'data-embodiment-prompt-edit': section.name, onClick: () => { setEditDraft({ name: section.name, text: effectiveText }); setPromptSave(null) }, disabled: promptBusy || extraBusy }, t('edit')),
+                  isExtra
+                    ? extraDeletePending === section.name
+                      ? [
+                          h('button', { key: 'del', type: 'button', style: styles.copyBtn, 'data-embodiment-extra-delete-confirm': section.name, onClick: () => postExtraPromptReset(displayName), disabled: extraBusy }, t('confirm')),
+                          h('button', { key: 'no', type: 'button', style: styles.copyBtn, onClick: () => setExtraDeletePending(null) }, t('cancel')),
+                        ]
+                      : [
+                          h('button', { key: 'placement', type: 'button', style: styles.copyBtn, 'data-embodiment-extra-placement-toggle': section.name, onClick: () => postExtraPrompt(displayName, effectiveText, extraPlacement === 'user' ? 'system' : 'user'), disabled: extraBusy }, extraPlacement === 'user' ? t('extraPromptSwitchSystem') : t('extraPromptSwitchUser')),
+                          h('button', { key: 'delete', type: 'button', style: styles.copyBtn, 'data-embodiment-extra-delete': section.name, onClick: () => setExtraDeletePending(section.name), disabled: extraBusy }, t('extraPromptDelete')),
+                        ]
+                    : dirty
+                      ? h('button', { type: 'button', style: styles.copyBtn, 'data-embodiment-prompt-reset': section.name, onClick: () => (section.sessionOverridden ? postSessionPromptReset(section.name) : postPrompt('/reset', { name: section.name })), disabled: promptBusy }, section.sessionOverridden ? t('resetSession') : t('resetOriginal'))
+                      : null,
+                  h('button', { type: 'button', style: styles.copyBtn, onClick: () => copy(key, effectiveText) }, copied === key ? t('copied') : t('copy')),
+                ),
+              ),
+              h('pre', { style: styles.pre, 'data-embodiment-detail': key }, effectiveText),
+            )
+        const diffNode = editing
+          ? (() => {
+              const diff = promptDiff(effectiveText, editDraft.text)
+              if (diff.rows.length === 0) return h('p', { style: styles.cardSub, 'data-embodiment-prompt-diff-empty': '1' }, t('diffNoChange'))
+              return h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px' } },
+                h('span', { style: styles.cardSub, 'data-embodiment-prompt-diff': section.name }, t('diffDelta').replace('{delta}', diff.deltaTokens > 0 ? `+${diff.deltaTokens}` : String(diff.deltaTokens))),
+                h('div', { style: styles.diffBox },
+                  ...diff.rows.map((row, index) => h('span', { key: index, style: row.kind === 'remove' ? styles.diffRemove : styles.diffAdd }, `${row.kind === 'remove' ? '-' : '+'} ${row.text}`)),
+                ),
+              )
+            })()
+          : null
+        return h(
+          'li',
+          { key, style: styles.inventoryItem },
+          h(
+            'div',
+            { style: styles.inventoryRow },
+            h(
+              'button',
+              { type: 'button', style: styles.inventoryHead, 'data-embodiment-expand': key, 'aria-expanded': isOpen, onClick: () => setExpanded({ ...expanded, [key]: !isOpen }) },
+              chevron(isOpen),
+              h('span', { style: styles.inventoryName }, displayName),
+              isExtra ? h('span', { style: styles.cardSub }, `${t('extraLabel')} · ${extraBadge}`) : dirty ? h('span', { style: styles.cardSub }, section.sessionOverridden ? t('sessionOverridden') : t('globalOverridden')) : null,
+              section.tokens !== null && section.tokens !== undefined ? h('span', { style: styles.cardSub }, `~${compactTokens(section.tokens)} ${t('tokensShort')}`) : null,
+            ),
+            h(
+              'span',
+              { style: { display: 'inline-flex', gap: '8px', alignItems: 'center', flex: 'none' } },
+              h('span', { style: styles.cardSub }, t('sessionSwitch')), switchNode('prompt', section.name, 'session', !disabledSessionPrompts.includes(section.name)),
+            ),
+          ),
+          isOpen ? editorNode : null,
+          isOpen && editing ? diffNode : null,
+          isOpen && editing
+            ? h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
+                isExtra
+                  ? [h('button', { key: 'save', type: 'button', style: styles.copyBtn, 'data-embodiment-extra-save': section.name, onClick: () => postExtraPrompt(displayName, editDraft.text, extraPlacement), disabled: extraBusy || unchanged }, t('save')),
+                     h('button', { key: 'cancel', type: 'button', style: styles.copyBtn, onClick: () => { setEditDraft(null); setPromptSave(null) } }, t('cancel')),
+                     h('span', { key: 'hint', style: styles.cardSub }, t('editHint'))]
+                  : promptSave === section.name
+                    ? [h('span', { key: 'q', style: styles.cardSub }, t('confirmGlobal')),
+                       h('button', { key: 'ok', type: 'button', style: styles.copyBtn, 'data-embodiment-prompt-confirm': section.name, onClick: () => postPrompt('', { name: section.name, text: editDraft.text }), disabled: promptBusy || unchanged }, t('confirm')),
+                       h('button', { key: 'no', type: 'button', style: styles.copyBtn, onClick: () => setPromptSave(null) }, t('cancel'))]
+                    : [h('button', { key: 'session', type: 'button', style: styles.copyBtn, 'data-embodiment-prompt-save-session': section.name, onClick: () => postSessionPrompt(section.name, editDraft.text), disabled: promptBusy || unchanged }, t('saveSession')),
+                       h('button', { key: 'save', type: 'button', style: styles.copyBtn, 'data-embodiment-prompt-save': section.name, onClick: () => setPromptSave(section.name), disabled: promptBusy || unchanged }, t('saveGlobal')),
+                       h('button', { key: 'cancel', type: 'button', style: styles.copyBtn, onClick: () => { setEditDraft(null); setPromptSave(null) } }, t('cancel')),
+                       h('span', { key: 'hint', style: styles.cardSub }, t('editHint'))],
+              )
+            : null,
+        )
+      }
+
+      const templateRow = (() => {
+        const templates = Array.isArray(data.promptTemplates) ? data.promptTemplates : []
+        if (templates.length === 0) return null
+        return h(
+          'div',
+          { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', { style: styles.cardSub }, t('extraPromptTemplates')),
+          ...templates.map((template) => h('button', {
+            key: template.id,
+            type: 'button',
+            style: styles.copyBtn,
+            'data-embodiment-extra-template': template.id,
+            onClick: () => setExtraDraft({
+              ...extraDraft,
+              name: template.id === 'method' ? t('extraPromptTemplateMethodName') : template.id,
+              text: template.text,
+              placement: 'system',
+            }),
+          }, template.id === 'method' ? t('extraPromptTemplateMethod') : template.id)),
+        )
+      })()
+
+      const extraForm = extraDraft
+        ? h(
+            'div',
+            { style: { display: 'flex', flexDirection: 'column', gap: '6px', padding: '6px 0' } },
+            templateRow,
+            h('input', {
+              type: 'text',
+              value: extraDraft.name,
+              placeholder: t('extraPromptName'),
+              'data-embodiment-extra-name': '1',
+              style: { width: '100%', boxSizing: 'border-box', padding: '7px 9px', borderRadius: '8px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)', color: 'inherit', font: 'inherit' },
+              onChange: (event) => setExtraDraft({ ...extraDraft, name: event.target.value }),
+            }),
+            h('textarea', {
+              rows: 6,
+              value: extraDraft.text,
+              placeholder: t('extraPromptText'),
+              'data-embodiment-extra-text': '1',
+              style: { ...styles.promptEditor, minHeight: '96px' },
+              onChange: (event) => setExtraDraft({ ...extraDraft, text: event.target.value }),
+            }),
+            h('label', { style: { ...styles.cardSub, display: 'flex', gap: '6px', alignItems: 'center' } },
+              t('extraPromptPlacement'),
+              h('select', {
+                value: extraDraft.placement || 'user',
+                'data-embodiment-extra-placement': '1',
+                style: { padding: '5px 7px', borderRadius: '7px', border: '1px solid var(--dsw-alias-border-l2)', background: 'var(--dsw-alias-bg-base)', color: 'inherit', font: 'inherit' },
+                onChange: (event) => setExtraDraft({ ...extraDraft, placement: event.target.value }),
+              },
+                h('option', { value: 'user' }, t('extraPromptUser')),
+                h('option', { value: 'system' }, t('extraPromptSystem')),
+              ),
+            ),
+            h(
+              'div',
+              { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
+              h('button', {
+                type: 'button',
+                style: styles.copyBtn,
+                'data-embodiment-extra-save-new': '1',
+                disabled: extraBusy || extraDraft.name.trim().length === 0 || extraDraft.text.trim().length === 0,
+                onClick: () => postExtraPrompt(extraDraft.name.trim(), extraDraft.text, extraDraft.placement || 'user'),
+              }, t('extraPromptSave')),
+              h('button', { type: 'button', style: styles.copyBtn, onClick: () => setExtraDraft(null) }, t('cancel')),
+              h('span', { style: styles.cardSub }, t('extraPromptHint')),
+            ),
+          )
+        : h('button', {
+            type: 'button',
+            style: styles.button,
+            'data-embodiment-extra-add': '1',
+            onClick: () => setExtraDraft({ name: '', text: '', placement: 'user' }),
+          }, t('extraPromptAdd'))
+
+      const loading = Boolean(props.loading) && !inventory
+      const loadError = props.error ? String(props.error) : null
+      const empty = !loading && !loadError && tools.length === 0 && sections.length === 0
+      const refreshButton = h('button', { type: 'button', style: styles.button, onClick: props.reload }, t('refresh'))
+      if (loading) {
+        return h(
+          Card,
+          { title: t('inventoryTitle'), id: 'inventory', t },
+          h(
+            'div',
+            { style: styles.skeletonStack, 'data-embodiment-inventory-loading': '1' },
+            h('div', { style: { ...styles.skeleton, width: '46%' } }),
+            h('div', { style: { ...styles.skeleton, width: '72%' } }),
+            h('div', { style: { ...styles.skeleton, width: '58%' } }),
+          ),
+        )
+      }
+      if (loadError) {
+        return h(
+          Card,
+          { title: t('inventoryTitle'), id: 'inventory', t },
+          h(
+            'div',
+            { style: styles.emptyState, 'data-embodiment-inventory-error': '1' },
+            h('p', { style: styles.error }, `${t('inventoryLoadFailed')}: ${loadError}`),
+            refreshButton,
+          ),
+        )
+      }
+      return h(
+        Card,
+        { title: t('inventoryTitle'), sub: data.sessionId ? shortSessionId(data.sessionId) : undefined, id: 'inventory', t },
+        !controlReady
+          ? h('div', { style: styles.banner, 'data-embodiment-control-required': '1' }, t('controlRequired'))
+          : null,
+        empty
+          ? h(
+              'div',
+              { style: styles.emptyState, 'data-embodiment-inventory-empty': '1' },
+              h('p', { style: styles.emptyText }, t('inventoryEmpty')),
+              h('div', { style: { display: 'flex', justifyContent: 'center', padding: '2px 0' } }, extraForm),
+              notice ? h('p', { style: styles.cardSub, 'data-embodiment-prompt-notice': '1' }, notice) : null,
+              refreshButton,
+            )
+          : null,
+        !empty
+          ? h(
+              'div',
+              { style: { display: 'flex', flexDirection: 'column', gap: '10px' } },
+              !controlReady
+                ? h('div', { style: styles.banner, 'data-embodiment-control-required': '1' }, t('controlRequired'))
+                : null,
+              h(
+                'div',
+                { style: styles.filterRow },
+                h('span', { style: styles.filterCount }, `${t('inventoryTools')} ${enabledTools.length}/${tools.length}`),
+                h('span', { style: styles.filterCount }, `${t('inventoryPrompts')} ${enabledSections.length}/${sections.length}`),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    style: { ...styles.filterToggle, ...(onlyEnabled ? styles.filterToggleOn : null) },
+                    'data-embodiment-only-enabled': String(onlyEnabled),
+                    'aria-pressed': onlyEnabled,
+                    onClick: () => setOnlyEnabled(!onlyEnabled),
+                  },
+                  onlyEnabled ? '✓ ' : '',
+                  t('onlyEnabled'),
+                ),
+              ),
+              h(
+                'div',
+                { style: styles.inventorySection },
+                h(
+                  'button',
+                  { type: 'button', style: styles.sectionHead, 'data-embodiment-section': 'tools', onClick: () => setOpen({ ...open, tools: !open.tools }) },
+                  chevron(open.tools), t('inventoryTools'), h('span', { style: styles.cardSub }, onlyEnabled ? `${visibleTools.length}/${tools.length}` : String(tools.length)),
+                ),
+                open.tools ? (visibleTools.length === 0 ? h('p', { style: styles.emptyText }, t('noneEnabled')) : h('ul', { style: styles.inventoryList }, visibleTools.map(toolRow))) : null,
+              ),
+              h(
+                'div',
+                { style: styles.inventorySection },
+                h(
+                  'button',
+                  { type: 'button', style: styles.sectionHead, 'data-embodiment-section': 'prompts', onClick: () => setOpen({ ...open, prompts: !open.prompts }) },
+                  chevron(open.prompts), t('inventoryPrompts'), h('span', { style: styles.cardSub }, onlyEnabled ? `${visibleSections.length}/${sections.length}` : String(sections.length)),
+                ),
+                open.prompts ? extraForm : null,
+                open.prompts && notice ? h('p', { style: styles.cardSub, 'data-embodiment-prompt-notice': '1' }, notice) : null,
+                open.prompts ? (visibleSections.length === 0 ? h('p', { style: styles.emptyText }, t('noneEnabled')) : h('ul', { style: styles.inventoryList }, visibleSections.map(promptRow))) : null,
+              ),
+              h('p', { style: styles.text }, t('inventoryRisk')),
+              restorePending
+                ? h(
+                    'div',
+                    { style: { display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' } },
+                    h('span', { style: styles.cardSub }, t('restoreConfirm')),
+                    h('button', { type: 'button', style: styles.button, 'data-embodiment-restore-confirm': '1', onClick: restore }, t('confirm')),
+                    h('button', { type: 'button', style: styles.button, onClick: () => setRestorePending(false) }, t('cancel')),
+                  )
+                : h('button', { type: 'button', style: styles.button, 'data-embodiment-restore-all': '1', onClick: () => setRestorePending(true) }, t('restoreAll')),
+            )
+          : null,
+      )
+    }
+
+    function ControlSection(props) {
+      const t = props.t
+      const control = props.control || {}
+      const [state, setState] = react.useState({ kind: 'idle' })
+
+      const toggle = (enable) => {
+        setState({ kind: 'saving' })
+        postJson(`${STATUS_PATH}/config/preset`, { enable })
+          .then(async (payload) => {
+            if (!payload || !payload.ok) throw new Error((payload && payload.error) || t('controlWriteFailed'))
+            const deadline = Date.now() + 10000
+            for (;;) {
+              await new Promise((resolve) => setTimeout(resolve, 500))
+              try {
+                // 控制行启停后要读新值，绕过 /status 的短缓存。
+                const status = await fetchJson(`${STATUS_PATH}?fresh=1`)
+                if (status && status.control && status.control.active === enable) return true
+              } catch {}
+              if (Date.now() > deadline) return false
+            }
+          })
+          .then((applied) => {
+            if (!applied) {
+              setState({ kind: 'error', message: t('controlWriteFailed') })
+              return
+            }
+            setState({ kind: 'notice', message: enable ? t('controlEnabled') : t('controlDisabled') })
+            if (typeof props.onToggled === 'function') props.onToggled()
+          })
+          .catch((failure) => setState({ kind: 'error', message: `${t('controlWriteFailed')}: ${String((failure && failure.message) || failure)}` }))
+      }
+
+      return h(
+        Card,
+        {
+          title: t('control'),
+          style: styles.cardFill,
+          id: 'control',
+          t,
+          action: control.active
+            ? control.compacting
+              ? h(StatusBadge, { t, state: 'warn', label: t('compacting') })
+              : h(StatusBadge, { t, state: 'ok' })
+            : h('span', { style: { ...styles.badge, color: 'var(--dsw-alias-label-tertiary)', borderColor: 'var(--dsw-alias-border-l2)' } }, t('controlOff')),
+        },
+        h('p', { style: styles.text }, control.active ? (control.compacting ? t('compactingHint') : t('controlReady')) : t('controlMissing')),
+        control.active && control.lastCompaction
+          ? h(
+              'div',
+              { style: styles.kpi },
+              h('span', { style: styles.kpiLabel }, t('controlLast')),
+              h('span', { style: styles.kpiValue }, `${compactTokens(control.lastCompaction.before)} → ${compactTokens(control.lastCompaction.after)}`),
+              h('span', { style: styles.kpiSub }, `${t('tokens')} · ${formatTime(control.lastCompactionAt)}`),
+            )
+          : null,
+        control.lastError
+          ? h('p', { style: styles.error, 'data-embodiment-lasterror': '1' }, `${t('controlError')}: ${control.lastError}`)
+          : null,
+        control.presetMountable ? h('p', { style: { ...styles.text, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11.5px' } }, t('controlPresetHint')) : null,
+        h(
+          'div',
+          { style: styles.actionRow },
+          control.presetMountable
+            ? h(
+                'button',
+                { type: 'button', style: { ...styles.button, ...(control.active ? null : styles.buttonPrimary) }, disabled: state.kind === 'saving', onClick: () => toggle(!control.active) },
+                state.kind === 'saving' ? t('controlBusy') : control.active ? t('controlDisable') : t('controlEnable'),
+              )
+            : null,
+          state.kind === 'error' ? h('p', { style: styles.error }, state.message) : null,
+          state.kind === 'notice' ? h('p', { style: styles.successText }, state.message) : null,
+        ),
+      )
+    }
+
+    /** 余额胶囊显示开关：默认关闭，偏好保存在 localStorage。 */
+    function BalanceDisplayCard(props) {
+      const t = props.t
+      const enabled = useBalanceEnabled()
+      return h(
+        Card,
+        { title: t('balanceToggleTitle'), id: 'balance-display', t, style: styles.cardFill },
+        h('p', { style: styles.text }, t('balanceToggleHint')),
+        h(
+          'div',
+          { style: styles.actionRow },
+          h(
+            'button',
+            {
+              type: 'button',
+              style: { ...styles.filterToggle, ...(enabled ? styles.filterToggleOn : null) },
+              'aria-pressed': enabled,
+              'data-embodiment-balance-toggle': '1',
+              'data-embodiment-balance-enabled': enabled ? '1' : '0',
+              onClick: () => setBalanceEnabled(!enabled),
+            },
+            enabled ? t('balanceDisable') : t('balanceEnable'),
+          ),
+        ),
+      )
+    }
+
+    const STRATEGY_PRESETS = {
+      conservative: { trigger: 0.9, target: 0.7 },
+      balanced: { trigger: 0.9, target: 0.6 },
+      aggressive: { trigger: 0.75, target: 0.5 },
+    }
+
+    function ConfigSection(props) {
+      const t = props.t
+      const budget = props.budget || {}
+      const editable = Boolean(props.editable)
+      const [draft, setDraft] = react.useState({ tokens: '', warn: '', error: '', trigger: '', target: '', strategy: 'balanced', analyticsLimit: '' })
+      const [result, setResult] = react.useState({ kind: 'idle' })
+
+      react.useEffect(() => {
+        setDraft({
+          tokens: budget.tokens === undefined ? '' : String(budget.tokens),
+          warn: budget.warnAt === undefined ? '' : String(budget.warnAt),
+          error: budget.errorAt === undefined ? '' : String(budget.errorAt),
+          trigger: budget.triggerAt === undefined ? '' : String(budget.triggerAt),
+          target: budget.targetAt === undefined ? '' : String(budget.targetAt),
+          strategy: typeof budget.compressionStrategy === 'string' ? budget.compressionStrategy : 'balanced',
+          analyticsLimit: budget.analyticsLimit === undefined ? '40' : String(budget.analyticsLimit),
+        })
+      }, [budget.tokens, budget.warnAt, budget.errorAt, budget.triggerAt, budget.targetAt, budget.compressionStrategy, budget.analyticsLimit])
+
+      const save = () => {
+        const tokens = Number(draft.tokens)
+        const warn = Number(draft.warn)
+        const error = Number(draft.error)
+        const trigger = Number(draft.trigger)
+        const target = Number(draft.target)
+        const analyticsLimit = Number(draft.analyticsLimit)
+        if (!Number.isInteger(analyticsLimit) || analyticsLimit < 1 || analyticsLimit > 200) {
+          setResult({ kind: 'error', message: t('invalidAnalyticsLimit') })
+          return
+        }
+        if (!Number.isInteger(tokens) || tokens <= 0) {
+          setResult({ kind: 'error', message: t('invalidTokens') })
+          return
+        }
+        if (!(warn > 0 && warn <= 1) || !(error > 0 && error <= 1) || warn >= error) {
+          setResult({ kind: 'error', message: t('invalidRatios') })
+          return
+        }
+        if (!(trigger > 0 && trigger <= 1)) {
+          setResult({ kind: 'error', message: t('invalidTrigger') })
+          return
+        }
+        if (!(target > 0 && target < 1) || !(target < trigger)) {
+          setResult({ kind: 'error', message: t('invalidTarget') })
+          return
+        }
+        setResult({ kind: 'saving' })
+        postJson(`${STATUS_PATH}/config`, { contextWindowTokens: tokens, warnAt: warn, errorAt: error, triggerAt: trigger, targetAt: target, compressionStrategy: draft.strategy, analyticsLimit })
+          .then(async (payload) => {
+            if (!payload || !payload.ok) throw new Error((payload && payload.error) || t('saveRefused'))
+            const deadline = Date.now() + 8000
+            for (;;) {
+              await new Promise((resolve) => setTimeout(resolve, 400))
+              try {
+                // 写配置会重挂插件，这里必须读最新值。
+                const status = await fetchJson(`${STATUS_PATH}?fresh=1`)
+                if (status && status.budget && status.budget.tokens === tokens) return true
+              } catch {}
+              if (Date.now() > deadline) return false
+            }
+          })
+          .then((applied) => {
+            if (!applied) {
+              setResult({ kind: 'error', message: t('saveRefused') })
+              return
+            }
+            setResult({ kind: 'saved' })
+            if (typeof props.onSaved === 'function') props.onSaved()
+          })
+          .catch((failure) => setResult({ kind: 'error', message: `${t('saveFailed')}: ${String((failure && failure.message) || failure)}` }))
+      }
+
+      const disabled = !editable || result.kind === 'saving'
+      const source = typeof budget.source === 'string' && budget.source !== '' ? budget.source : null
+      return h(
+        Card,
+        { title: t('configTitle'), style: styles.cardFill, sub: editable ? undefined : t('configUnavailable'), id: 'config', t },
+        editable
+          ? h(
+              'div',
+              { style: styles.configGrid },
+              h(
+                'label',
+                { style: styles.field },
+                h(
+                  'span',
+                  { style: styles.fieldLabelRow },
+                  h('span', { style: styles.label }, t('compressionStrategy')),
+                ),
+                h('select', {
+                  style: styles.input,
+                  value: draft.strategy,
+                  disabled,
+                  'data-embodiment-strategy': '1',
+                  onChange: (event) => {
+                    const strategy = event.target.value
+                    const preset = STRATEGY_PRESETS[strategy] || STRATEGY_PRESETS.balanced
+                    setDraft({ ...draft, strategy, trigger: String(preset.trigger), target: String(preset.target) })
+                  },
+                },
+                  h('option', { value: 'conservative' }, t('strategyConservative')),
+                  h('option', { value: 'balanced' }, t('strategyBalanced')),
+                  h('option', { value: 'aggressive' }, t('strategyAggressive')),
+                ),
+              ),
+              h(
+                'label',
+                { style: styles.field },
+                h(
+                  'span',
+                  { style: styles.fieldLabelRow },
+                  h('span', { style: styles.label }, t('analyticsLimitLabel')),
+                ),
+                h('input', { style: styles.input, type: 'number', min: 1, max: 200, step: 1, value: draft.analyticsLimit, disabled, 'data-embodiment-analytics-limit': '1', onChange: (event) => setDraft({ ...draft, analyticsLimit: event.target.value }) }),
+                h('span', { style: styles.fieldUnit }, t('analyticsLimitHint')),
+              ),
+              h(
+                'label',
+                { style: styles.field },
+                h(
+                  'span',
+                  { style: styles.fieldLabelRow },
+                  h('span', { style: styles.label }, t('defaultBudgetShort')),
+                  h('span', { style: styles.fieldUnit }, t('tokens')),
+                ),
+                h('input', { style: styles.input, type: 'number', min: 1, step: 1000, value: draft.tokens, disabled, onChange: (event) => setDraft({ ...draft, tokens: event.target.value }) }),
+              ),
+              h(
+                'label',
+                { style: styles.field },
+                h(
+                  'span',
+                  { style: styles.fieldLabelRow },
+                  h('span', { style: styles.label }, t('warnLabel')),
+                  h('span', { style: styles.fieldUnit }, '0–1'),
+                ),
+                h('input', { style: styles.input, type: 'number', min: 0.01, max: 1, step: 0.01, value: draft.warn, disabled, onChange: (event) => setDraft({ ...draft, warn: event.target.value }) }),
+              ),
+              h(
+                'label',
+                { style: styles.field },
+                h(
+                  'span',
+                  { style: styles.fieldLabelRow },
+                  h('span', { style: styles.label }, t('errorLabel')),
+                  h('span', { style: styles.fieldUnit }, '0–1'),
+                ),
+                h('input', { style: styles.input, type: 'number', min: 0.01, max: 1, step: 0.01, value: draft.error, disabled, onChange: (event) => setDraft({ ...draft, error: event.target.value }) }),
+              ),
+              h(
+                'label',
+                { style: styles.field },
+                h(
+                  'span',
+                  { style: styles.fieldLabelRow },
+                  h('span', { style: styles.label }, t('triggerLabel')),
+                  h('span', { style: styles.fieldUnit }, '0–1'),
+                ),
+                h('input', { style: styles.input, type: 'number', min: 0.01, max: 1, step: 0.01, value: draft.trigger, disabled, onChange: (event) => setDraft({ ...draft, trigger: event.target.value }) }),
+              ),
+              h(
+                'label',
+                { style: styles.field },
+                h(
+                  'span',
+                  { style: styles.fieldLabelRow },
+                  h('span', { style: styles.label }, t('targetLabel')),
+                  h('span', { style: styles.fieldUnit }, '0–1'),
+                ),
+                h('input', { style: styles.input, type: 'number', min: 0.01, max: 0.99, step: 0.01, value: draft.target, disabled, onChange: (event) => setDraft({ ...draft, target: event.target.value }) }),
+              ),
+            )
+          : null,
+        source ? h('p', { style: { ...styles.cardSub, marginLeft: 0 } }, `${t('source')}: ${source}`) : null,
+        h('p', { style: styles.text }, t('configHint')),
+        h('p', { style: { ...styles.text, color: 'var(--dsw-alias-label-tertiary)', fontSize: '11.5px' } }, t('triggerHint')),
+        h(
+          'div',
+          { style: styles.actionRow },
+          editable
+            ? h('button', { type: 'button', style: { ...styles.button, ...styles.buttonPrimary }, onClick: save, disabled }, result.kind === 'saving' ? t('saving') : t('save'))
+            : null,
+          result.kind === 'saved' ? h('p', { style: styles.successText, 'data-embodiment-config-saved': '1' }, t('saved')) : null,
+          result.kind === 'error' ? h('p', { style: styles.error }, result.message) : null,
+        ),
+      )
+    }
+
+    /** 共享面板：设置分区与整页都用它。 */
+    // ── 首次运行 / 健康 / 洞察 / 节省 / 数据管理 ───────────────────────────
+    function OnboardingCard(props) {
+      const t = props.t
+      const data = props.data || {}
+      const onboarding = data.onboarding || {}
+      const budget = data.budget || {}
+      const [tokens, setTokens] = react.useState(String(budget.tokens || 128000))
+      const [strategy, setStrategy] = react.useState(budget.compressionStrategy || 'balanced')
+      const [consent, setConsent] = react.useState(false)
+      const [busy, setBusy] = react.useState(false)
+      const [error, setError] = react.useState('')
+      if (onboarding.completed || onboarding.dismissed) return null
+      // 引导卡片的写操作统一走 postJson（错误文案来自服务端 error）。
+      const post = (path, body) => postJson(`${STATUS_PATH}${path}`, body)
+      const finish = async (dismiss) => {
+        if (dismiss) {
+          setBusy(true)
+          try {
+            // “稍后”不是永久关闭：只记录 deferredAt，下次进入仍会再次出现（见 onboarding 文案）。
+            await post('/onboarding', { deferred: true })
+            if (typeof props.onDone === 'function') props.onDone()
+          } catch (failure) {
+            setError(String(failure?.message || failure))
+          } finally {
+            setBusy(false)
+          }
+          return
+        }
+        const number = Number(tokens)
+        if (!Number.isInteger(number) || number <= 0) {
+          setError(t('onboardingBudgetRequired'))
+          return
+        }
+        setBusy(true)
+        setError('')
+        try {
+          await post('/onboarding', {
+            completed: true,
+            dismissed: false,
+            budgetConfirmed: true,
+            budgetTokens: number,
+            presetConsent: consent,
+          })
+          if (consent) {
+            try { await post('/config/preset', { enable: true }) } catch {}
+          }
+          if (number !== Number(budget.tokens) || strategy !== budget.compressionStrategy) {
+            const preset = STRATEGY_PRESETS[strategy] || STRATEGY_PRESETS.balanced
+            try {
+              await post('/config', { contextWindowTokens: number, compressionStrategy: strategy, triggerAt: preset.trigger, targetAt: preset.target })
+            } catch {}
+          }
+          if (typeof props.onDone === 'function') props.onDone()
+        } catch (failure) {
+          setError(String(failure?.message || failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+      return h('div', { style: styles.card, 'data-embodiment-onboarding': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('onboardingTitle')), h('span', { style: styles.cardSub }, t('onboardingIntro'))),
+        h('div', { style: styles.configGrid },
+          h('label', { style: styles.field }, h('span', { style: styles.label }, t('onboardingBudget')),
+            h('input', { style: styles.input, type: 'number', min: 1, step: 1000, value: tokens, disabled: busy, onChange: (event) => setTokens(event.target.value), 'data-embodiment-onboarding-budget': '1' }),
+            h('span', { style: styles.fieldUnit }, t('onboardingBudgetHint')),
+          ),
+          h('label', { style: styles.field }, h('span', { style: styles.label }, t('onboardingStrategy')),
+            h('select', { style: styles.input, value: strategy, disabled: busy, onChange: (event) => setStrategy(event.target.value), 'data-embodiment-onboarding-strategy': '1' },
+              h('option', { value: 'conservative' }, t('strategyConservative')),
+              h('option', { value: 'balanced' }, t('strategyBalanced')),
+              h('option', { value: 'aggressive' }, t('strategyAggressive')),
+            ),
+          ),
+        ),
+        h('div', { style: styles.detailBox },
+          h('strong', { style: styles.cardTitle }, t('onboardingPreset')),
+          h('p', { style: styles.text }, t('onboardingPresetHint')),
+          h('label', { style: { display: 'flex', gap: '6px', alignItems: 'flex-start', fontSize: '12px' } },
+            h('input', { type: 'checkbox', checked: consent, disabled: busy, onChange: (event) => setConsent(event.target.checked), 'data-embodiment-onboarding-consent': '1' }),
+            h('span', null, t('onboardingPresetYes')),
+          ),
+        ),
+        error ? h('p', { style: styles.error }, error) : null,
+        h('div', { style: styles.actionRow },
+          h('button', { type: 'button', style: { ...styles.button, ...styles.buttonPrimary }, disabled: busy, onClick: () => finish(false), 'data-embodiment-onboarding-finish': '1' }, busy ? t('saving') : t('onboardingFinish')),
+          h('button', { type: 'button', style: styles.button, disabled: busy, onClick: () => finish(true), 'data-embodiment-onboarding-later': '1' }, t('onboardingLater')),
+        ),
+      )
+    }
+
+    function OnboardingReopen(props) {
+      const t = props.t
+      const [busy, setBusy] = react.useState(false)
+      const [error, setError] = react.useState('')
+      const reopen = () => {
+        setBusy(true)
+        setError('')
+        postJson(`${STATUS_PATH}/onboarding`, { reset: true })
+          .then(() => {
+            if (typeof props.onDone === 'function') props.onDone()
+          })
+          .catch((failure) => setError(String(failure?.message || failure)))
+          .finally(() => setBusy(false))
+      }
+      return h('div', { style: styles.banner, 'data-embodiment-onboarding-reopen': '1' },
+        h('span', null, t('onboardingReopenHint')),
+        h('button', { type: 'button', style: styles.button, disabled: busy, onClick: reopen, 'data-embodiment-onboarding-reopen-btn': '1' }, t('onboardingReopen')),
+        error ? h('span', { style: styles.error }, error) : null,
+      )
+    }
+
+    /**
+     * 本会话预算覆盖：面板里的等价入口，省得用户记 `/embody <tokens>` 命令。
+     * 写 `/status/session-budget`，tokens 传 null 表示清除（回到控制行/宿主默认）。
+     */
+    function SessionBudgetCard(props) {
+      const t = props.t
+      const current = Number(props.current) > 0 ? Number(props.current) : null
+      const [value, setValue] = react.useState(() => (current ? String(current) : ''))
+      const [busy, setBusy] = react.useState(false)
+      const [notice, setNotice] = react.useState(null)
+      const sessionId = props.sessionId || ''
+      const submit = (tokens) => {
+        if (busy || !sessionId) return
+        setBusy(true)
+        setNotice(null)
+        fetchJson(`${STATUS_PATH}/session-budget`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ sessionId, tokens }),
+        })
+          .then(() => {
+            setNotice({ kind: 'ok', text: t('sessionBudgetSaved') })
+            if (typeof props.onDone === 'function') props.onDone()
+          })
+          .catch((error) => setNotice({ kind: 'error', text: `${t('sessionBudgetFailed')}: ${String((error && error.message) || error)}` }))
+          .finally(() => setBusy(false))
+      }
+      const parsed = Number(value)
+      const valid = Number.isInteger(parsed) && parsed > 0
+      return h(
+        Card,
+        { title: t('sessionBudget'), t, style: styles.cardFill, id: 'session-budget' },
+        h('p', { style: styles.text }, sessionId ? t('sessionBudgetHint') : t('sessionBudgetNoSession')),
+        h(
+          'div',
+          { style: styles.fieldLabelRow },
+          h('input', {
+            type: 'number',
+            min: 1,
+            step: 1000,
+            value,
+            disabled: busy || !sessionId,
+            placeholder: String(props.budget || 128000),
+            onChange: (event) => setValue(event.target.value),
+            style: styles.input,
+            'data-embodiment-session-budget-input': '1',
+            'aria-label': t('sessionBudget'),
+          }),
+          h('button', { type: 'button', style: styles.buttonPrimary, disabled: busy || !sessionId || !valid, onClick: () => submit(parsed), 'data-embodiment-session-budget-save': '1' }, t('save')),
+          current ? h('button', { type: 'button', style: styles.button, disabled: busy || !sessionId, onClick: () => submit(null), 'data-embodiment-session-budget-clear': '1' }, t('clear')) : null,
+        ),
+        current ? h('p', { style: styles.kpiSub }, `${t('sessionBudgetCurrent')}: ${current}`) : null,
+        notice ? h('p', { style: notice.kind === 'error' ? styles.error : styles.text }, notice.text) : null,
+      )
+    }
+
+    function HealthCard(props) {
+      const t = props.t
+      const health = props.health
+      const control = props.control || {}
+      const [busy, setBusy] = react.useState(false)
+      const [notice, setNotice] = react.useState('')
+      if (!health || !Array.isArray(health.checks)) return null
+      const labels = {
+        control: t('healthControl'),
+        preset: t('healthPreset'),
+        config: t('healthConfig'),
+        budget: t('healthBudget'),
+        measurement: t('healthMeasurement'),
+        holidays: t('healthHolidays'),
+      }
+      const repair = () => {
+        setBusy(true)
+        setNotice('')
+        postJson(`${STATUS_PATH}/config/preset`, { enable: true })
+          .then(() => {
+            setNotice(t('healthFixed'))
+            if (typeof props.onDone === 'function') setTimeout(props.onDone, 1200)
+          })
+          .catch((failure) => setNotice(String(failure?.message || failure)))
+          .finally(() => setBusy(false))
+      }
+      return h('div', { style: styles.card, 'data-embodiment-health': health.healthy ? 'ok' : 'issue' },
+        h('div', { style: styles.cardHead },
+          h('h3', { style: styles.cardTitle }, t('healthTitle')),
+          h(StatusBadge, { t, state: health.healthy ? 'ok' : 'warn', label: health.healthy ? t('healthOk') : t('healthIssue') }),
+        ),
+        h('ul', { style: styles.checkList }, health.checks.map((check) => h('li', { key: check.id, style: styles.checkItem, 'data-embodiment-health-check': check.id },
+          h('span', { style: { color: check.ok ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-warn-primary)' } }, check.ok ? '✓' : '!'),
+          h('span', null, labels[check.id] || check.id),
+        ))),
+        !health.healthy && control.presetMountable && !control.presetMounted
+          ? h('button', { type: 'button', style: { ...styles.button, ...styles.buttonPrimary }, disabled: busy, onClick: repair, 'data-embodiment-health-fix': '1' }, busy ? t('saving') : t('healthFix'))
+          : null,
+        !health.healthy && control.presetMounted && !control.active ? h('p', { style: styles.cardSub }, t('healthManual')) : null,
+        notice ? h('p', { style: styles.cardSub }, notice) : null,
+      )
+    }
+
+    function insightText(t, insight) {
+      const values = (insight && insight.values) || {}
+      const share = formatPercent(values.share, 0)
+      const tokens = compactTokens(values.tokens || values.toolsTokens || 0)
+      const count = values.count ?? values.sessions ?? 0
+      if (insight.id === 'tool-schema-share') return t('insightToolShare').replace('{share}', share).replace('{tokens}', tokens)
+      if (insight.id === 'unused-tools') return t('insightUnusedTools').replace('{count}', String(count)).replace('{tokens}', tokens)
+      if (insight.id === 'repeated-compaction') return t('insightRepeatedCompaction').replace('{sessions}', String(values.sessions || 0)).replace('{compactions}', String(values.compactions || 0))
+      if (insight.id === 'compaction-failures') return t('insightCompactionFailures').replace('{count}', String(count))
+      if (insight.id === 'unknown-pricing') return t('insightUnknownPricing').replace('{sessions}', String(values.sessions || 0)).replace('{tokens}', tokens)
+      if (insight.id === 'cost-outlier') return t('insightCostOutlier').replace('{title}', values.title || shortSessionId(values.sessionId || '')).replace('{multiple}', (Number(values.multiple) || 0).toFixed(1)).replace('{cost}', formatCost(values.cost))
+      if (insight.id === 'pricing-stale') return t('insightPricingStale').replace('{days}', String(values.days ?? 0)).replace('{threshold}', String(values.thresholdDays ?? 0))
+      if (insight.id === 'cache-hit-low') return t('insightCacheLow').replace('{share}', formatPercent(values.share, 0)).replace('{tokens}', compactTokens(values.tokens || 0))
+      if (insight.id === 'near-limit-not-compacted') return t('insightNotCompacted').replace('{share}', formatPercent(values.ratio, 0)).replace('{tokens}', compactTokens(values.tokens || 0)).replace('{budget}', compactTokens(values.budget || 0))
+      if (insight.id === 'budget-unconfirmed') return t('insightBudgetUnconfirmed').replace('{tokens}', compactTokens(values.tokens || 0))
+      if (insight.id === 'analytics-truncated') return t('insightAnalyticsTruncated').replace('{scanned}', String(values.scanned ?? 0)).replace('{total}', String(values.total ?? 0))
+      return ''
+    }
+
+    function InsightCards(props) {
+      const t = props.t
+      const insights = Array.isArray(props.insights) ? props.insights : []
+      if (insights.length === 0) return h('div', { style: styles.card, 'data-embodiment-insights': 'empty' }, h('h3', { style: styles.cardTitle }, t('insightsTitle')), h('p', { style: styles.emptyText }, t('insightsEmpty')))
+      return h('div', { style: styles.card, 'data-embodiment-insights': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('insightsTitle')), h('span', { style: styles.cardSub }, String(insights.length))),
+        h('ul', { style: styles.insightList }, insights.map((insight) => h('li', { key: insight.id, style: styles.insightItem, 'data-embodiment-insight': insight.id },
+          h('span', { style: { ...styles.badge, ...(insight.severity === 'warn' ? styles.badgeWarn : styles.badgeOk) } }, insight.severity === 'warn' ? '!' : 'i'),
+          h('span', { style: styles.insightText }, insightText(t, insight)),
+          h('button', { type: 'button', style: styles.copyBtn, onClick: () => props.onOpen && props.onOpen(insight.action || {}) }, t('insightOpen')),
+          // 有明确修复动作的洞察才显示第二个按钮：直接写配置，不需要用户自己去设置页找。
+          insight.apply && insight.apply.path
+            ? h('button', {
+              type: 'button',
+              style: { ...styles.copyBtn, marginLeft: 6 },
+              'data-embodiment-insight-apply': insight.id,
+              onClick: () => props.onApply && props.onApply(insight.apply),
+            }, t(insight.apply.label || 'insightApply'))
+            : null,
+        ))),
+      )
+    }
+
+    function SavingsCard(props) {
+      const t = props.t
+      const savings = props.savings
+      if (!savings || (!savings.compactions && !savings.tokens)) return null
+      return h('div', { style: styles.card, 'data-embodiment-savings': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('savingsTitle')), h('span', { style: styles.cardSub }, t('costEstimateLabel'))),
+        h('div', { style: styles.kpiBand },
+          h('div', { style: styles.kpiCard }, h('span', { style: styles.kpiCardLabel }, t('savingsCompactions')), h('strong', { style: styles.kpiCardValue }, formatTokens(savings.compactions))),
+          h('div', { style: { ...styles.kpiCard, ...styles.kpiCardDivider } }, h('span', { style: styles.kpiCardLabel }, t('savingsTokens')), h('strong', { style: styles.kpiCardValue }, compactTokens(savings.tokens))),
+          h('div', { style: { ...styles.kpiCard, ...styles.kpiCardDivider } }, h('span', { style: styles.kpiCardLabel }, t('savingsCost')), h('strong', { style: styles.kpiCardValue }, formatCost(savings.estimatedCost))),
+        ),
+        h('p', { style: styles.billingNote }, t('savingsMethod')),
+      )
+    }
+
+    function AlertStrip(props) {
+      const t = props.t
+      const live = props.live || {}
+      const control = props.control || {}
+      const alerts = []
+      if (!control.active) alerts.push({ id: 'control', text: t('alertControlMissing') })
+      const ratio = typeof live.ratio === 'number' ? live.ratio : null
+      const warnAt = typeof live.warnAt === 'number' ? live.warnAt : 0.75
+      const errorAt = typeof live.errorAt === 'number' ? live.errorAt : 0.9
+      if (ratio !== null && ratio >= errorAt) alerts.push({ id: 'budget-error', text: t('alertBudgetError').replace('{percent}', formatPercent(ratio, 0)) })
+      else if (ratio !== null && ratio >= warnAt) alerts.push({ id: 'budget-warn', text: t('alertBudgetWarn').replace('{percent}', formatPercent(ratio, 0)) })
+      const failure = Array.isArray(control.log) ? control.log.slice().reverse().find((entry) => entry && entry.outcome === 'failure') : null
+      if (failure) alerts.push({ id: 'compaction', text: t('alertCompactionFailed') })
+      if (alerts.length === 0) return null
+      return h('div', { style: styles.alertStrip, 'data-embodiment-alert': alerts.map((alert) => alert.id).join(',') },
+        alerts.map((alert) => h('div', { key: alert.id, style: styles.alertRow },
+          h('span', { style: styles.alertDot }),
+          h('span', null, alert.text),
+          alert.id === 'control' ? h('button', { type: 'button', style: styles.copyBtn, onClick: () => props.onOpen && props.onOpen('settings') }, t('healthFix')) : null,
+        )),
+      )
+    }
+
+    function SessionCompare(props) {
+      const t = props.t
+      const sessions = Array.isArray(props.sessions) ? props.sessions : []
+      const ranked = sessions.slice().sort((left, right) => (right.tokens || 0) - (left.tokens || 0))
+      const [leftId, setLeftId] = react.useState(ranked[0]?.id || '')
+      const [rightId, setRightId] = react.useState(ranked[1]?.id || '')
+      if (sessions.length < 2) return null
+      const left = sessions.find((session) => session.id === leftId) || ranked[0]
+      const right = sessions.find((session) => session.id === rightId) || ranked[1]
+      const select = (value, onChange) => h('select', { style: styles.input, value, onChange: (event) => onChange(event.target.value), 'data-embodiment-compare-select': '1' },
+        sessions.map((session) => h('option', { key: session.id, value: session.id }, `${session.title || shortSessionId(session.id)} · ${compactTokens(session.tokens)}`)),
+      )
+      const rows = [
+        [t('compareTokens'), (session) => compactTokens(session.tokens)],
+        [t('compareRequests'), (session) => formatTokens(session.requests)],
+        [t('compareCost'), (session) => formatCost(session.cost)],
+        [t('compareCompactions'), (session) => formatTokens(session.compactions)],
+      ]
+      return h('div', { style: styles.card, 'data-embodiment-compare': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('compareTitle')), h('span', { style: styles.cardSub }, t('compareEmpty'))),
+        h('div', { style: styles.compareGrid },
+          h('label', { style: styles.field }, h('span', { style: styles.label }, t('compareA')), select(left.id, setLeftId)),
+          h('label', { style: styles.field }, h('span', { style: styles.label }, t('compareB')), select(right.id, setRightId)),
+        ),
+        h('div', { style: styles.compareRows }, rows.map(([key, read]) => h('div', { key, style: styles.compareRow },
+          h('span', { style: styles.billingRowLabel }, key),
+          h('span', { style: styles.compareValue }, read(left)),
+          h('span', { style: styles.compareValue }, read(right)),
+        ))),
+      )
+    }
+
+    /**
+     * 价格行 → 面板草稿。必须保留 `peak` / `offPeak`：
+     * 0.27.0 起配置层支持峰谷两档，若面板只映射平档，保存一次就会把 yml 里配好的峰谷价静默抹平。
+     */
+    function pricingDraft(rows) {
+      const list = Array.isArray(rows) ? rows : []
+      const text = (value) => (value === undefined || value === null ? '' : String(value))
+      return list.map((row) => ({
+        match: String(row.match || ''),
+        input: text(row.input),
+        cacheRead: text(row.cacheRead),
+        cacheWrite: text(row.cacheWrite),
+        output: text(row.output),
+        peakInput: text(row.peak && row.peak.input),
+        peakOutput: text(row.peak && row.peak.output),
+        offPeakInput: text(row.offPeak && row.offPeak.input),
+        offPeakOutput: text(row.offPeak && row.offPeak.output),
+      }))
+    }
+
+    /**
+     * 面板草稿 → `POST /config` 的 modelPricing。峰谷每档需 input+output 成对填写，
+     * 两者都留空表示该档不启用；只填一半时返回 `incomplete`，由调用方提示而不是静默丢弃。
+     */
+    function pricingPayload(draft) {
+      const list = Array.isArray(draft) ? draft : []
+      const band = (input, output) => {
+        const hasInput = String(input).trim() !== ''
+        const hasOutput = String(output).trim() !== ''
+        if (!hasInput && !hasOutput) return null
+        if (!hasInput || !hasOutput) return 'incomplete'
+        return { input: Number(input), output: Number(output) }
+      }
+      const rows = list.filter((row) => String(row.match).trim().length > 0)
+      if (rows.some((row) => band(row.peakInput, row.peakOutput) === 'incomplete' || band(row.offPeakInput, row.offPeakOutput) === 'incomplete')) {
+        return { incomplete: true, rows: [] }
+      }
+      return {
+        incomplete: false,
+        rows: rows.map((row) => {
+          const peak = band(row.peakInput, row.peakOutput)
+          const offPeak = band(row.offPeakInput, row.offPeakOutput)
+          return {
+            match: String(row.match).trim(),
+            input: Number(row.input) || 0,
+            cacheRead: Number(row.cacheRead) || 0,
+            cacheWrite: Number(row.cacheWrite) || 0,
+            output: Number(row.output) || 0,
+            ...(peak && peak !== 'incomplete' ? { peak } : {}),
+            ...(offPeak && offPeak !== 'incomplete' ? { offPeak } : {}),
+          }
+        }),
+      }
+    }
+
+    function PricingSection(props) {
+      const t = props.t
+      const pricing = props.pricing || {}
+      const editable = Boolean(props.editable)
+      const [rows, setRows] = react.useState([])
+      const [busy, setBusy] = react.useState(false)
+      const [notice, setNotice] = react.useState('')
+      react.useEffect(() => {
+        setRows(pricingDraft(pricing.rows))
+      }, [pricing.rows])
+      const update = (index, key, value) => setRows((current) => current.map((row, at) => at === index ? { ...row, [key]: value } : row))
+      const save = () => {
+        setBusy(true)
+        setNotice('')
+        const next = pricingPayload(rows)
+        if (next.incomplete) {
+          setBusy(false)
+          setNotice(t('pricingBandIncomplete'))
+          return
+        }
+        postJson(`${STATUS_PATH}/config`, { modelPricing: next.rows })
+          .then(() => {
+            setNotice(t('pricingSaved'))
+            if (typeof props.onSaved === 'function') setTimeout(props.onSaved, 1200)
+          })
+          .catch((failure) => setNotice(String(failure?.message || failure)))
+          .finally(() => setBusy(false))
+      }
+      const cell = (row, index, key, label) => h('input', {
+        style: styles.input,
+        value: row[key],
+        placeholder: label,
+        disabled: !editable || busy,
+        onChange: (event) => update(index, key, event.target.value),
+        'data-embodiment-pricing-field': key,
+      })
+      return h('div', { style: styles.card, 'data-embodiment-pricing': '1', 'data-embodiment-card': 'pricing' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('pricingTitle')), h('span', { style: styles.cardSub }, t('costCustom'))),
+        h('p', { style: styles.text }, t('pricingHint')),
+        // 节假日只读展示：内置表按年内置，跨年用配置 `holidays` 补充即可，不必改代码。
+        pricing && pricing.holidays
+          ? h('p', { style: styles.cardSub, 'data-embodiment-holidays': '1' },
+              t('pricingHolidays')
+                .replace('{builtin}', String(pricing.holidays.builtin ?? 0))
+                .replace('{custom}', String((pricing.holidays.custom || []).length))
+                .replace('{total}', String(pricing.holidays.total ?? 0)),
+              pricing.holidays.ignoreBuiltin ? ` · ${t('pricingHolidaysIgnoreBuiltin')}` : '',
+            )
+          : null,
+        pricing && pricing.holidays
+          ? h('p', { style: styles.cardSub, 'data-embodiment-holidays-where': '1' }, t('pricingHolidaysWhere'))
+          : null,
+        rows.length === 0 ? h('p', { style: styles.emptyText }, t('pricingEmpty')) : h('div', { style: styles.pricingRows },
+          h('p', { style: styles.pricingBandLabel }, t('pricingBandsHint')),
+          rows.map((row, index) => h('div', { key: index, style: styles.pricingItem },
+            h('div', { style: styles.pricingRow },
+              cell(row, index, 'match', t('pricingMatch')),
+              cell(row, index, 'input', t('pricingInput')),
+              cell(row, index, 'cacheRead', t('pricingCacheRead')),
+              cell(row, index, 'cacheWrite', t('pricingCacheWrite')),
+              cell(row, index, 'output', t('pricingOutput')),
+              h('button', { type: 'button', style: styles.copyBtn, disabled: busy, onClick: () => setRows((current) => current.filter((_, at) => at !== index)) }, t('pricingRemove')),
+            ),
+            // 峰谷两档：留空 = 全天同价；填了就在对应时段用这一档。
+            h('div', { style: styles.pricingBandRow },
+              cell(row, index, 'peakInput', t('pricingPeakInput')),
+              cell(row, index, 'peakOutput', t('pricingPeakOutput')),
+              cell(row, index, 'offPeakInput', t('pricingOffPeakInput')),
+              cell(row, index, 'offPeakOutput', t('pricingOffPeakOutput')),
+            ),
+          )),
+        ),
+        h('div', { style: styles.actionRow },
+          h('button', { type: 'button', style: styles.button, disabled: !editable || busy, onClick: () => setRows((current) => [...current, { match: '', input: '', cacheRead: '', cacheWrite: '', output: '', peakInput: '', peakOutput: '', offPeakInput: '', offPeakOutput: '' }]), 'data-embodiment-pricing-add': '1' }, t('pricingAdd')),
+          h('button', { type: 'button', style: styles.button, disabled: !editable || busy, onClick: save, 'data-embodiment-pricing-save': '1' }, busy ? t('saving') : t('pricingSave')),
+          notice ? h('span', { style: styles.cardSub }, notice) : null,
+        ),
+      )
+    }
+
+    function DataCard(props) {
+      const t = props.t
+      const range = props.range || '7d'
+      const coverage = props.coverage || {}
+      const [confirm, setConfirm] = react.useState('')
+      const [exportConfirm, setExportConfirm] = react.useState('')
+      const [busy, setBusy] = react.useState(false)
+      const [notice, setNotice] = react.useState('')
+      // 二次确认通过后再真正触发下载：用临时 <a download> 保留文件名与浏览器原生下载行为。
+      const downloadExport = (format) => {
+        try {
+          const link = document.createElement('a')
+          link.href = `${STATUS_PATH}/export?format=${encodeURIComponent(format)}&range=${encodeURIComponent(range)}`
+          link.download = ''
+          link.rel = 'noopener'
+          document.body.appendChild(link)
+          link.click()
+          link.remove()
+        } catch {}
+        setExportConfirm('')
+      }
+      const clear = (scope) => {
+        if (confirm !== scope) {
+          setConfirm(scope)
+          return
+        }
+        setBusy(true)
+        postJson(`${STATUS_PATH}/data/reset`, { scope })
+          .then(() => {
+            setNotice(t('cleared'))
+            setConfirm('')
+            if (typeof props.onDone === 'function') props.onDone()
+          })
+          .catch((failure) => setNotice(String(failure?.message || failure)))
+          .finally(() => setBusy(false))
+      }
+      return h('div', { style: styles.card, 'data-embodiment-data': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('clearData')), h('span', { style: styles.cardSub }, t('dataScope').replace('{scanned}', String(coverage.scanned ?? '—')).replace('{total}', String(coverage.total ?? '—')).replace('{limit}', String(coverage.limit ?? '—')))),
+        h('p', { style: styles.text }, t('clearDataHint')),
+        h('label', { style: { display: 'flex', gap: '8px', alignItems: 'center', fontSize: '12px', margin: '2px 0 6px' }, title: t('alertToggleHint') },
+          h('input', {
+            type: 'checkbox',
+            checked: props.alertsEnabled !== false,
+            'data-embodiment-alerts-toggle': '1',
+            onChange: (event) => { if (typeof props.onAlertsChange === 'function') props.onAlertsChange(event.target.checked) },
+          }),
+          h('span', null, t('alertToggle')),
+        ),
+        h('p', { style: styles.cardSub }, t('alertToggleHint')),
+        h('div', { style: styles.actionRow },
+          h('button', { type: 'button', style: styles.button, onClick: () => setExportConfirm('json'), 'data-embodiment-export': 'json' }, t('exportJson')),
+          h('button', { type: 'button', style: styles.button, onClick: () => setExportConfirm('csv'), 'data-embodiment-export': 'csv' }, t('exportCsv')),
+        ),
+        // 导出文件里含本机绝对路径（cwd），下载前先确认一次，避免误点外传。
+        exportConfirm
+          ? h('div', { style: styles.actionRow, 'data-embodiment-export-confirm': exportConfirm },
+              h('span', { style: styles.cardSub }, t('exportConfirmHint')),
+              h('button', { type: 'button', style: styles.buttonPrimary, onClick: () => downloadExport(exportConfirm), 'data-embodiment-export-yes': '1' }, t('exportConfirmYes')),
+              h('button', { type: 'button', style: styles.button, onClick: () => setExportConfirm(''), 'data-embodiment-export-cancel': '1' }, t('cancel')),
+            )
+          : null,
+        h('div', { style: styles.actionRow },
+          ['logs', 'toggles', 'all'].map((scope) => h('button', { key: scope, type: 'button', style: styles.button, disabled: busy, onClick: () => clear(scope), 'data-embodiment-data-clear': scope }, scope === 'logs' ? t('clearLogs') : scope === 'toggles' ? t('clearToggles') : t('clearAllData'))),
+        ),
+        confirm ? h('p', { style: styles.error }, t('clearDataConfirm')) : null,
+        notice ? h('p', { style: styles.cardSub }, notice) : null,
+      )
+    }
+
+    function LabsCard(props) {
+      const t = props.t
+      const [open, setOpen] = react.useState(false)
+      return h('div', { style: styles.card, 'data-embodiment-labs': '1' },
+        h('div', { style: styles.cardHead },
+          h('h3', { style: styles.cardTitle }, t('labsTitle')),
+          h('button', { type: 'button', style: styles.copyBtn, onClick: () => setOpen(!open), 'data-embodiment-labs-toggle': '1' }, open ? t('collapse') : t('expand')),
+        ),
+        h('p', { style: styles.text }, t('labsHint')),
+        open ? h(ScaffoldPanel, { t }) : null,
+      )
+    }
+
+    /**
+     * 技能目录（只读）。
+     *
+     * 数据由两条路径提供（宿主注册表 / 标准根目录扫描），响应里的 `via` 会说明这次是哪条；
+     * 卡片如实显示，不假装两者等价。这里只展示「有什么、来自哪里、进不进模型」，不提供开关：
+     * 技能的 invocation 由各自 SKILL.md 的 frontmatter 决定，改它等于改文件，那是另一个动作。
+     */
+    function SkillsCard(props) {
+      const t = props.t
+      const data = props.data
+      const error = props.error
+      const [openName, setOpenName] = react.useState(null)
+      const [bodies, setBodies] = react.useState({})
+      const [bodyError, setBodyError] = react.useState(null)
+      const [query, setQuery] = react.useState('')
+      const [copied, setCopied] = react.useState(null)
+
+      const toggleBody = (name) => {
+        if (openName === name) {
+          setOpenName(null)
+          return
+        }
+        setOpenName(name)
+        if (bodies[name] !== undefined) return
+        setBodyError(null)
+        const suffix = props.sessionId ? `&sessionId=${encodeURIComponent(String(props.sessionId))}` : ''
+        fetchJson(`${STATUS_PATH}/skills/body?name=${encodeURIComponent(name)}${suffix}`)
+          .then((payload) => {
+            if (payload && payload.ok) setBodies((previous) => ({ ...previous, [name]: payload }))
+            else throw new Error((payload && payload.error) || 'invalid payload')
+          })
+          .catch((failure) => setBodyError(String((failure && failure.message) || failure)))
+      }
+
+      /**
+       * 复制技能文件路径。浏览器可能在非安全上下文里没有 clipboard，所以失败就静默——
+       * 不弹错误，也不假装成功。
+       */
+      const copyPath = (name, path) => {
+        if (typeof navigator === 'undefined' || !navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') return
+        navigator.clipboard.writeText(String(path)).then(() => {
+          setCopied(name)
+          setTimeout(() => setCopied((current) => (current === name ? null : current)), 1500)
+        }).catch(() => {})
+      }
+
+      const head = h('div', { style: styles.cardHead },
+        h('h3', { style: styles.cardTitle }, t('skillsTitle')),
+        data && data.counts
+          ? h('span', { style: styles.cardSub }, t('skillsCount').replace('{model}', String(data.counts.model || 0)).replace('{total}', String(data.counts.total || 0)))
+          : null,
+      )
+
+      if (props.loading) {
+        return h('div', { style: styles.card, 'data-embodiment-skills': 'loading' }, head, h('p', { style: styles.emptyText }, t('loading')))
+      }
+      if (error) {
+        return h('div', { style: styles.card, 'data-embodiment-skills': 'error' },
+          head,
+          h('p', { style: styles.error }, String(error)),
+          h('button', { type: 'button', style: styles.button, onClick: () => props.reload && props.reload() }, t('retry')),
+        )
+      }
+      if (!data) {
+        return h('div', { style: styles.card, 'data-embodiment-skills': 'empty' }, head, h('p', { style: styles.emptyText }, t('skillsEmpty')))
+      }
+      if (data.ok === false) {
+        return h('div', { style: styles.card, 'data-embodiment-skills': 'unavailable' },
+          head,
+          h('p', { style: styles.emptyText }, String(data.error || t('skillsUnavailable'))),
+          data.hint ? h('p', { style: { ...styles.emptyText, fontSize: '11px' } }, String(data.hint)) : null,
+        )
+      }
+
+      const skills = Array.isArray(data.skills) ? data.skills : []
+      const needle = query.trim().toLowerCase()
+      const matches = needle.length === 0
+        ? skills
+        : skills.filter((skill) => `${skill.name} ${skill.description || ''} ${skill.whenToUse || ''}`.toLowerCase().includes(needle))
+
+      // 按来源根分组：同名不同根的技能在视觉上要能分开，用户才知道该改哪个文件。
+      const groups = []
+      for (const skill of matches) {
+        const source = skill.source || 'unknown'
+        const existing = groups.find((group) => group.source === source)
+        if (existing) existing.items.push(skill)
+        else groups.push({ source, items: [skill] })
+      }
+
+      const renderRow = (skill) => {
+        const body = bodies[skill.name]
+        const isOpen = openName === skill.name
+        return h('li', { key: skill.name, style: styles.insightItem, 'data-embodiment-skill': skill.name },
+          h('div', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: 0 } },
+            h('span', { style: { ...styles.badge, ...(skill.modelInvocable ? styles.badgeOk : styles.badgeWarn) }, title: t('skillsModelHint') }, skill.modelInvocable ? t('skillsModelYes') : t('skillsModelNo')),
+            h('span', { style: { ...styles.badge, ...(skill.userInvocable ? styles.badgeOk : styles.badgeWarn) }, title: t('skillsUserHint') }, skill.userInvocable ? t('skillsUserYes') : t('skillsUserNo')),
+            h('span', { style: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '12px' }, title: skill.path || '' }, skill.name),
+            h('button', { type: 'button', style: styles.copyBtn, onClick: () => toggleBody(skill.name), 'data-embodiment-skill-toggle': skill.name }, isOpen ? t('collapse') : t('skillsView')),
+            skill.path
+              ? h('button', { type: 'button', style: styles.copyBtn, onClick: () => copyPath(skill.name, skill.path), 'data-embodiment-skill-copy': skill.name }, copied === skill.name ? t('skillsCopied') : t('skillsCopyPath'))
+              : null,
+          ),
+          h('p', { style: { ...styles.text, margin: '2px 0 0' } }, skill.description || ''),
+          isOpen && skill.whenToUse ? h('p', { style: { ...styles.text, margin: '2px 0 0', opacity: 0.8 } }, skill.whenToUse) : null,
+          isOpen
+            ? (body
+              ? h('div', { style: { marginTop: '6px' } },
+                body.path ? h('div', { style: { ...styles.cardSub, fontSize: '11px', wordBreak: 'break-all' } }, body.path) : null,
+                h('pre', { style: styles.pre }, body.content || ''),
+                body.truncated ? h('p', { style: { ...styles.text, fontSize: '11px' } }, t('skillsTruncated')) : null,
+              )
+              : h('p', { style: { ...styles.text, marginTop: '6px' } }, bodyError || t('loading')))
+            : null,
+        )
+      }
+
+      const body = skills.length === 0
+        ? h('p', { style: styles.emptyText }, t('skillsEmpty'))
+        : (matches.length === 0
+          ? h('p', { style: styles.emptyText }, t('skillsNoMatch'))
+          : h('div', null, groups.map((group) => h('div', { key: group.source, style: { marginTop: '6px' } },
+            h('div', { style: { ...styles.cardSub, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.04em' }, 'data-embodiment-skill-group': group.source },
+              `${group.source} · ${group.items.length}`),
+            h('ul', { style: styles.insightList }, group.items.map(renderRow)),
+          ))))
+
+      return h('div', { style: styles.card, 'data-embodiment-skills': '1' },
+        head,
+        h('p', { style: styles.text }, t('skillsHint')),
+        data.complete === false ? h('p', { style: { ...styles.banner, margin: '0 0 6px' } }, t('skillsIncomplete')) : null,
+        data.via ? h('p', { style: { ...styles.cardSub, fontSize: '11px' } }, t('skillsVia').replace('{via}', t(data.via === 'registry' ? 'skillsViaRegistry' : data.via === 'registry-empty' ? 'skillsViaRegistryEmpty' : 'skillsViaFilesystem'))) : null,
+        data.via === 'registry' && data.scopeApplied === false
+          ? h('p', { style: { ...styles.cardSub, fontSize: '11px' } }, t('skillsGlobalOnly'))
+          : null,
+        data.cwd ? h('p', { style: { ...styles.cardSub, fontSize: '11px', wordBreak: 'break-all' } }, t('skillsCwd').replace('{cwd}', String(data.cwd))) : null,
+        skills.length > 6 || needle.length > 0
+          ? h('input', {
+            type: 'search',
+            value: query,
+            placeholder: t('skillsSearch'),
+            onChange: (event) => setQuery(event.target.value),
+            'data-embodiment-skill-search': '1',
+            style: { ...styles.input, margin: '6px 0', width: '100%' },
+          })
+          : null,
+        body,
+      )
+    }
+
+    /** 共享面板：设置分区与整页都用它。 */
+
+    // ── 会话洞察：KPI / 每日图 / 会话卡 / 趋势 / 事件 ───────────────────────
+    function KpiBand(props) {
+      const t = props.t
+      const kpi = props.kpi || {}
+      const items = [
+        { key: 'sessions', label: t('kpiSessions'), value: formatTokens(kpi.sessions), sub: props.coverage ? t('coverageShort').replace('{scanned}', props.coverage.scanned).replace('{total}', props.coverage.total) : '' },
+        { key: 'tokens', label: t('kpiTokens'), value: compactTokens(kpi.tokens), sub: `≈ ${formatTokens(kpi.tokens)} tokens` },
+        { key: 'cache', label: t('kpiCache'), value: formatPercent(kpi.cacheHit, 1), sub: `${compactTokens(kpi.cacheRead || 0)} cache` },
+        { key: 'tools', label: t('kpiTools'), value: formatTokens(kpi.toolCalls), sub: '' },
+        { key: 'active', label: t('kpiActive'), value: formatDurationMs(kpi.activeMs), sub: '' },
+        { key: 'compactions', label: t('kpiCompactions'), value: formatTokens(kpi.compactions), sub: kpi.injections ? `${formatTokens(kpi.injections)} inject` : '' },
+      ]
+      return h('div', { style: styles.kpiBand, 'data-embodiment-kpis': '1' }, items.map((item, index) => h('div', { key: item.key, style: index > 0 ? { ...styles.kpiCard, ...styles.kpiCardDivider } : styles.kpiCard, 'data-embodiment-kpi': item.key },
+        h('span', { style: styles.kpiCardLabel }, item.label),
+        h('strong', { style: styles.kpiCardValue }, item.value),
+        item.sub ? h('span', { style: styles.kpiCardSub }, item.sub) : null,
+      )))
+    }
+
+    /** 计费卡：把官方价目按缓存命中/未命中/输出拆开，展示 token → 人民币。 */
+    function BillingCard(props) {
+      const t = props.t
+      const kpi = props.kpi || {}
+      const parts = kpi.costParts || {}
+      const pricing = props.pricing || {}
+      const models = Array.isArray(pricing.models) ? pricing.models : []
+      const flash = models.find((model) => /flash/i.test(model.id)) || models[0] || null
+      const peak = typeof pricing.peakNow === 'boolean' ? pricing.peakNow : null
+      const rate = flash && peak !== null ? (peak ? flash.peak : flash.offPeak) : null
+      const rows = [
+        { key: 'cacheRead', label: t('costCacheHit'), tokens: kpi.cacheRead, cost: parts.cacheRead },
+        { key: 'input', label: t('costCacheMiss'), tokens: kpi.input, cost: parts.input },
+        { key: 'cacheWrite', label: t('costCacheWrite'), tokens: kpi.cacheWrite, cost: parts.cacheWrite },
+        { key: 'output', label: t('costOutput'), tokens: kpi.output, cost: parts.output },
+      ].filter((row) => (Number(row.tokens) || 0) > 0 || (Number(row.cost) || 0) > 0)
+      const note = rate
+        ? `${t('costRateExample')} ${flash.label} · ${t('costNow')}：${peak ? t('costPeak') : t('costOffPeak')} · ${t('costCacheHit')} ¥${rate.cacheRead} · ${t('costCacheMiss')} ¥${rate.input} · ${t('costOutput')} ¥${rate.output} / ${t('costRateUnit')}`
+        : t('costPricingNote')
+      return h('div', { style: styles.card, 'data-embodiment-billing': '1' },
+        h('div', { style: styles.cardHead },
+          h('h3', { style: styles.cardTitle }, t('billingTitle')),
+          h('span', { style: styles.cardSub }, `${pricing.currency || 'CNY'} · ${t('costEstimated')}${pricing.custom ? ` · ${t('costCustom')}` : ''}`),
+        ),
+        h('div', { style: styles.billingBody },
+          h('div', { style: styles.billingTotal },
+            h('span', { style: styles.billingTotalLabel }, t('costTotal')),
+            h('strong', { style: styles.billingTotalValue, 'data-embodiment-billing-total': '1' }, formatCost(kpi.cost)),
+          ),
+          h('div', { style: styles.billingRows }, rows.map((row) => h('div', { key: row.key, style: styles.billingRow, 'data-embodiment-billing-row': row.key },
+            h('span', { style: styles.billingRowLabel }, row.label),
+            h('span', { style: styles.billingRowTokens }, `${compactTokens(row.tokens)} tokens`),
+            h('span', { style: styles.billingRowCost }, formatCost(row.cost)),
+          ))),
+        ),
+        h('p', { style: styles.billingNote, title: pricing.source || '' }, note),
+      )
+    }
+
+    function DailyChart(props) {
+      const t = props.t
+      const daily = Array.isArray(props.daily) ? props.daily : []
+      const max = Math.max(1, ...daily.map((day) => Number(day.tokens) || 0))
+      const total = daily.reduce((sum, day) => sum + (Number(day.tokens) || 0), 0)
+      const ariaLabel = daily.length === 0
+        ? t('dailyTitle')
+        : `${t('dailyTitle')}：${daily.map((day) => `${String(day.date).slice(5)} ${formatTokens(Number(day.tokens) || 0)}`).join('，')}`
+      return h('div', { style: styles.chartWrap, 'data-embodiment-daily': '1', role: 'img', 'aria-label': ariaLabel },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('dailyTitle')), h('span', { style: styles.cardSub }, `${compactTokens(total)} tokens`)),
+        h('div', { style: styles.chartBars }, daily.map((day) => {
+          const value = Number(day.tokens) || 0
+          const ratio = value / max
+          return h('div', { key: day.date, style: styles.chartBarCol, title: `${day.date} · ${formatTokens(value)} tokens · ${day.requests} req` },
+            h('div', { style: { ...styles.chartBar, ...(value === 0 ? styles.chartBarZero : null), height: `${Math.max(2, ratio * 100)}%` } }),
+            h('span', { style: styles.chartLabel }, String(day.date).slice(5)),
+          )
+        })),
+      )
+    }
+
+    /**
+     * 优先用官方 uiWorkspace.openSession 切换主视图；没有该服务时回退到
+     * role=treeitem 的侧栏会话行（pointer 序列），避免只按文字找到错误节点。
+     */
+    function openSessionInSidebar(title, sessionId) {
+      if (workspaceService && typeof workspaceService.openSession === 'function' && sessionId) {
+        try {
+          workspaceService.openSession(sessionId)
+          return true
+        } catch {}
+      }
+      if (!title || typeof document === 'undefined') return false
+      const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim()
+      const containers = Array.from(document.querySelectorAll('[role="tree"], aside, nav, [class*="sidebar"], [class*="Sidebar"]'))
+      for (const container of containers) {
+        const target = Array.from(container.querySelectorAll('[role="treeitem"], button, [role="button"], a')).find((element) => {
+          const text = norm(element.textContent)
+          return text === title || (text.startsWith(title) && text.length <= title.length + 24)
+        })
+        if (target) {
+          // 会话树行是 role=treeitem 的 div，监听的是 pointer 序列；单纯 click() 在桌面端不生效。
+          const rect = target.getBoundingClientRect()
+          const x = Math.round(rect.left + rect.width / 2)
+          const y = Math.round(rect.top + rect.height / 2)
+          const eventInit = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, clientX: x, clientY: y }
+          const fire = (type) => {
+            const usePointer = type.startsWith('pointer') && typeof PointerEvent === 'function'
+            const event = usePointer
+              ? new PointerEvent(type, { ...eventInit, pointerId: 1, pointerType: 'mouse', isPrimary: true, buttons: type.endsWith('down') ? 1 : 0 })
+              : new MouseEvent(type, { ...eventInit, buttons: type.endsWith('down') ? 1 : 0, detail: 1 })
+            target.dispatchEvent(event)
+          }
+          // 从会话卡的 click 处理器里同步派发到侧栏行会被 React 的当前事件批次吞掉；挪到下一拍。
+          window.setTimeout(() => { for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) fire(type) }, 0)
+          return true
+        }
+      }
+      return false
+    }
+
+    function SessionCards(props) {
+      const t = props.t
+      const sessions = Array.isArray(props.sessions) ? props.sessions : []
+      const [query, setQuery] = react.useState('')
+      const [sort, setSort] = react.useState('recent')
+      const [expanded, setExpanded] = react.useState(false)
+      const needle = query.trim().toLowerCase()
+      const totalCost = sessions.reduce((sum, item) => sum + (typeof item.cost === 'number' ? item.cost : 0), 0)
+      const maxCost = sessions.reduce((max, item) => Math.max(max, typeof item.cost === 'number' ? item.cost : 0), 0)
+      const sortKey = (item) => (sort === 'tokens' ? (item.tokens || 0) : sort === 'cost' ? (item.cost || 0) : (item.lastActivityAt || 0))
+      const filtered = sessions
+        .filter((item) => {
+          if (!needle) return true
+          return [item.title, item.cwd, item.id, item.model].some((value) => String(value || '').toLowerCase().includes(needle))
+        })
+        .slice()
+        .sort((a, b) => sortKey(b) - sortKey(a))
+      const visible = expanded ? filtered : filtered.slice(0, 12)
+      const base = (item) => (String(item || '').split(/[\\/]/).filter(Boolean).pop() || '—')
+      return h('div', { style: styles.card, 'data-embodiment-sessions': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('sessionsTitle')), h('span', { style: styles.cardSub }, `${filtered.length}/${sessions.length}`)),
+        h('div', { style: styles.filterBar },
+          h('input', { style: styles.searchInput, value: query, placeholder: t('searchSessions'), onChange: (event) => setQuery(event.target.value), 'data-embodiment-session-search': '1' }),
+          h('button', { type: 'button', style: { ...styles.filterToggle, ...(sort === 'recent' ? styles.filterToggleOn : null) }, onClick: () => setSort('recent') }, t('sortRecent')),
+          h('button', { type: 'button', style: { ...styles.filterToggle, ...(sort === 'tokens' ? styles.filterToggleOn : null) }, onClick: () => setSort('tokens') }, t('sortTokens')),
+          totalCost > 0 ? h('button', { type: 'button', style: { ...styles.filterToggle, ...(sort === 'cost' ? styles.filterToggleOn : null) }, onClick: () => setSort('cost'), 'data-embodiment-sort': 'cost' }, t('sortCost')) : null,
+        ),
+        filtered.length === 0 ? h('p', { style: styles.emptyText }, t('noSessions')) : h('div', { style: styles.sessionList }, visible.map((item) =>
+          h('div', {
+            key: item.id,
+            role: 'button',
+            tabIndex: 0,
+            style: { ...styles.sessionCard, ...(props.selected === item.id ? styles.sessionCardOn : null) },
+            onClick: () => props.onSelect(item.id),
+            onKeyDown: (event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); props.onSelect(item.id) } },
+            title: item.id,
+            'data-embodiment-session-card': item.id,
+          },
+            h('p', { style: styles.sessionTitle }, item.title || shortSessionId(item.id)),
+            h('span', { style: styles.sessionMeta }, `${base(item.cwd)} · ${item.lastActivityAt ? new Date(item.lastActivityAt).toLocaleString() : '—'}`),
+            h('div', { style: styles.sessionStats },
+              h('span', null, `${compactTokens(item.tokens)} tokens`),
+              h('span', null, `${formatTokens(item.turns)} ${t('turnsLabel')}`),
+              h('span', null, `${formatTokens(item.requests)} ${t('requestsLabel')}`),
+              item.cost !== null && item.cost !== undefined ? h('span', { style: item.cost > 0 && item.cost === maxCost ? { color: 'var(--dsw-alias-state-warn-primary)' } : null, title: totalCost > 0 ? `${Math.round(((item.cost || 0) / totalCost) * 100)}%` : '' }, `${t('costEstimateLabel')} ${formatCost(item.cost)}`) : null,
+              item.compactions > 0 ? h('span', null, `${formatTokens(item.compactions)}×` ) : null,
+            ),
+            h('button', {
+              type: 'button',
+              style: { ...styles.linkAction, border: 0, background: 'transparent', padding: 0 },
+              onClick: (event) => { event.preventDefault(); event.stopPropagation(); if (props.onOpen) props.onOpen(item) },
+              'data-embodiment-session-open': item.id,
+            }, `${t('openSession')} ↗`),
+          ),
+        )),
+        filtered.length > 12 ? h('button', { type: 'button', style: styles.button, onClick: () => setExpanded((value) => !value), 'data-embodiment-session-more': '1' }, expanded ? t('showLess') : t('showMore')) : null,
+      )
+    }
+
+    function TrendCard(props) {
+      const t = props.t
+      const detail = props.detail
+      if (!detail) {
+        return h('div', { style: styles.card }, h('h3', { style: styles.cardTitle }, t('trendTitle')), props.error ? h('p', { style: styles.error }, `${t('analyticsError')}: ${props.error}`) : h('div', { style: styles.skeletonStack }, h('div', { style: { ...styles.skeleton, width: '100%', height: '120px' } })))
+      }
+      const allRequests = Array.isArray(detail.requests) ? detail.requests : []
+      const requests = allRequests.slice(-40)
+      const compactions = Array.isArray(detail.compactions) ? detail.compactions : []
+      if (requests.length === 0) return h('div', { style: styles.card }, h('h3', { style: styles.cardTitle }, t('trendTitle')), h('p', { style: styles.emptyText }, t('trendNoData')))
+      const series = requests.map((item) => {
+        const prompt = Number(item.prompt) || 0
+        const output = Number(item.output) || 0
+        return { item, prompt, output, total: prompt + output }
+      })
+      const maxTotal = Math.max(1, ...series.map((entry) => entry.total))
+      const budget = Number(props.budget) || 0
+      // 预算离峰值不远时把纵轴抬到预算，让预算线留在图内；差太远则按峰值缩放，
+      // 避免柱子被压成贴地的一条线（预算关系放到右上角摘要里）。
+      const axisCeiling = budget > 0 && budget <= maxTotal * 1.6 ? Math.max(maxTotal, budget) : maxTotal
+      const axisMax = niceAxisMax(axisCeiling)
+      const barMax = 112
+      const peakShare = budget > 0 ? maxTotal / budget : null
+      const budgetTop = budget > 0 && budget <= axisMax ? barMax - (budget / axisMax) * barMax : null
+      const showBudgetLine = budgetTop !== null && budgetTop >= 14
+      const sub = allRequests.length > requests.length
+        ? `${requests.length} / ${allRequests.length} ${t('requestsUnit')}`
+        : `${requests.length} ${t('requestsUnit')}`
+      const costTotal = typeof detail.session.cost === 'number' ? detail.session.cost : series.reduce((sum, entry) => sum + (typeof entry.item.cost === 'number' ? entry.item.cost : 0), 0)
+      const costKnown = typeof detail.session.cost === 'number' || series.some((entry) => typeof entry.item.cost === 'number')
+      const legendItem = (color, label, shape) => h('span', { style: styles.trendLegendItem },
+        h('i', { style: { width: shape === 'line' ? '10px' : '8px', height: shape === 'line' ? '2px' : '8px', borderRadius: '2px', background: color, display: 'inline-block', flex: 'none' } }),
+        label,
+      )
+      const timeText = (time) => {
+        if (!time) return '—'
+        try { return new Date(time).toLocaleTimeString() } catch { return '—' }
+      }
+      return h('div', { style: { ...styles.card, ...styles.cardFill }, 'data-embodiment-trend': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('trendTitle')), h('span', { style: styles.cardSub }, `${sub}${costKnown ? ` · ${formatCost(costTotal)}` : ''}`)),
+        h('div', { style: styles.legendInline },
+          legendItem('var(--dsw-static-blue-450)', t('trendPrompt')),
+          legendItem('var(--dsw-static-green-400)', t('trendOutput')),
+          legendItem('var(--dsw-alias-state-warn-primary)', t('trendCompaction'), 'line'),
+          h('span', { style: { ...styles.trendLegendItem, marginLeft: 'auto' } },
+            peakShare === null
+              ? `${t('trendPeak')} ${compactTokens(maxTotal)}`
+              : `${t('trendPeak')} ${compactTokens(maxTotal)} / ${compactTokens(budget)}（${formatPercent(peakShare, 0)}）`,
+          ),
+        ),
+        h('div', { style: styles.trendBody, role: 'img', 'aria-label': `${t('trendTitle')}：${series.map((entry, index) => `#${index + 1} ${t('trendPrompt')} ${formatTokens(entry.prompt)} ${t('trendOutput')} ${formatTokens(entry.output)}`).join('，')}` },
+          h('div', { style: styles.trendAxis },
+            h('span', null, compactTokens(axisMax)),
+            h('span', null, compactTokens(axisMax / 2)),
+            h('span', null, '0'),
+          ),
+          h('div', { style: styles.trendScroll }, h('div', { style: styles.trendCols },
+            [0, 50, 100].map((percent) => h('div', { key: `grid-${percent}`, style: { ...styles.trendGridLine, top: `${(barMax * percent) / 100}px` } })),
+            showBudgetLine ? h('div', { key: 'budget', style: { ...styles.trendGridLine, top: `${budgetTop}px`, borderTop: '1px dashed var(--dsw-alias-label-tertiary)' }, title: `${t('budgetLine')} ${formatTokens(budget)}` }, h('span', { style: styles.trendBudgetLabel }, `${t('budgetLine')} ${compactTokens(budget)}`)) : null,
+            series.map((entry, index) => {
+              const totalHeight = Math.max(2, Math.round((entry.total / axisMax) * barMax))
+              const promptHeight = entry.total > 0 ? Math.max(1, Math.round((entry.prompt / entry.total) * totalHeight)) : 1
+              const outputHeight = Math.max(0, totalHeight - promptHeight)
+              const previousCompaction = index > 0 ? series[index - 1].item.compaction : null
+              const marker = index > 0 && entry.item.compaction && (!previousCompaction || previousCompaction.endedAt !== entry.item.compaction.endedAt)
+              const turn = entry.item.turn !== null && entry.item.turn !== undefined ? `T${entry.item.turn}` : '—'
+              const title = `#${index + 1} · ${timeText(entry.item.time)} · ${turn} · ${t('trendPrompt')} ${formatTokens(entry.prompt)} · ${t('trendOutput')} ${formatTokens(entry.output)} · ${formatTokens(entry.total)}${typeof entry.item.cost === 'number' ? ` · ${formatCost(entry.item.cost)}` : ''}${marker ? ` · ${t('trendAfterCompaction')}` : ''}`
+              return h('div', { key: `${entry.item.time}-${index}`, style: styles.trendCol, title },
+                marker ? h('div', { style: styles.trendMarker, title: t('trendAfterCompaction') }, h('span', { style: styles.trendMarkerDot })) : null,
+                h('div', { style: { ...styles.trendOutput, height: `${outputHeight}px` } }),
+                h('div', { style: { ...styles.trendPrompt, height: `${promptHeight}px` } }),
+                h('span', { style: styles.trendLabel }, `#${index + 1}`),
+              )
+            }),
+          )),
+        ),
+        h('div', { style: styles.banner, 'data-embodiment-detail-session': detail.session ? detail.session.id : '' }, `${detail.session && detail.session.title ? detail.session.title : '—'} · ${t('requestsLabel')} ${detail.requests.length} · ${detail.session && detail.session.lastActivityAt ? new Date(detail.session.lastActivityAt).toLocaleString() : '—'}`),
+        compactions.length > 0 ? h('div', { style: styles.logBox }, h('div', { style: styles.logToggle }, `${t('eventCompaction')} · ${compactions.length}`), h('ul', { style: styles.logList }, compactions.slice(-8).reverse().map((item) =>
+          h('li', { key: `${item.at}-${item.turn}`, style: styles.logItem },
+            h('div', { style: styles.logLine },
+              h('span', { style: styles.logTime }, item.at ? new Date(item.at).toLocaleTimeString() : '—'),
+              h('span', { style: styles.logMain }, `${formatTokens(item.shadowedTokens)} tokens`),
+              h('span', { style: styles.logSession }, `${t('durationLabel')} ${formatDurationMs(item.durationMs)}`),
+            ),
+          ),
+        ))) : null,
+      )
+    }
+
+    function EventsCard(props) {
+      const t = props.t
+      const [filter, setFilter] = react.useState('all')
+      const logs = Array.isArray(props.logs) ? props.logs.slice().reverse() : []
+      const filtered = logs.filter((entry) => filter === 'all' || entry.outcome === filter)
+      const rawTimeline = props.detail && Array.isArray(props.detail.timeline) ? props.detail.timeline.slice().reverse() : []
+      const timeline = rawTimeline.filter((item) => item.kind === 'compaction').slice(0, 30)
+      const injectionCount = rawTimeline.filter((item) => item.kind === 'inject').length
+      return h('div', { style: styles.card, 'data-embodiment-events': '1' },
+        h('div', { style: styles.cardHead }, h('h3', { style: styles.cardTitle }, t('eventsTitle')), h('span', { style: styles.cardSub }, `${filtered.length}/${logs.length}${injectionCount > 0 ? ` · ${injectionCount} ${t('eventInject')}` : ''}`)),
+        h('div', { style: styles.filterBar },
+          [['all', t('eventAll')], ['success', t('eventSuccess')], ['failure', t('eventFailure')]].map(([key, label]) =>
+            h('button', { key, type: 'button', style: { ...styles.filterToggle, ...(filter === key ? styles.filterToggleOn : null) }, onClick: () => setFilter(key) }, label),
+          ),
+        ),
+        filtered.length === 0 ? h('p', { style: styles.emptyText }, t('noEvents')) : h('ul', { style: styles.eventList }, filtered.map((entry) => {
+          const success = entry.outcome === 'success'
+          return h('li', { key: entry.id, style: styles.eventItem, 'data-embodiment-event': entry.outcome },
+            h('span', { style: { ...styles.eventKind, color: success ? 'var(--dsw-alias-state-success-primary)' : 'var(--dsw-alias-state-error-primary)' } }, success ? t('eventSuccess') : t('eventFailure')),
+            h('div', { style: styles.eventMain },
+              h('div', null, entry.before || entry.after ? `${t('beforeAfter')}: ${formatTokens(entry.before)} → ${formatTokens(entry.after)}${entry.target ? ` · ${t('targetLine')} ${formatTokens(entry.target)}` : ''}` : `${t('targetLine')} ${formatTokens(entry.target)}`),
+              h('div', { style: styles.sessionMeta }, `${entry.trigger || '—'}${entry.rounds !== null && entry.rounds !== undefined ? ` · ${t('roundsLabel')} ${entry.rounds}` : ''}${entry.durationMs !== null && entry.durationMs !== undefined ? ` · ${t('durationLabel')} ${formatDurationMs(entry.durationMs)}` : ''}${entry.shadowed ? ` · ${formatTokens(entry.shadowed)} tokens` : ''}`),
+              entry.message ? h('div', { style: styles.logMessage }, entry.message) : null,
+            ),
+            h('span', { style: styles.eventAside }, formatTime(entry.at)),
+          )
+        })),
+        timeline.length > 0 ? h('div', { style: styles.logBox },
+          h('div', { style: styles.logToggle }, `${t('eventCompaction')} · ${timeline.length}`),
+          h('ul', { style: styles.eventList }, timeline.map((item, index) =>
+            h('li', { key: `${item.time}-${index}`, style: styles.eventItem },
+              h('span', { style: styles.eventKind }, item.kind === 'compaction' ? t('eventCompaction') : t('eventInject')),
+              h('span', { style: styles.eventMain }, item.detail || ''),
+              h('span', { style: styles.eventAside }, item.time ? new Date(item.time).toLocaleTimeString() : '—'),
+            ),
+          )),
+        ) : null,
+      )
+    }
+
+    /** Agent Embodiment Scaffold：模板 → 预览 → 生成（写盘由宿主路由完成）。 */
+    function ScaffoldPanel(props) {
+      const t = props.t
+      const sub = { margin: '6px 0 0', fontSize: '11.5px', lineHeight: 1.6, color: 'var(--dsw-alias-label-tertiary)' }
+      const [templateState] = useStatus(`${STATUS_PATH}/scaffold/templates`)
+      const templates = templateState.phase === 'ready' && Array.isArray(templateState.data?.templates) ? templateState.data.templates : []
+      const [templateId, setTemplateId] = react.useState('')
+      const [targetDir, setTargetDir] = react.useState('')
+      const [name, setName] = react.useState('')
+      const [slug, setSlug] = react.useState('')
+      const [overwrite, setOverwrite] = react.useState(false)
+      const [writeAgents, setWriteAgents] = react.useState(false)
+      const [processSkills, setProcessSkills] = react.useState(false)
+      const [mcpJson, setMcpJson] = react.useState('')
+      const [plan, setPlan] = react.useState(null)
+      const [busy, setBusy] = react.useState(false)
+      const [error, setError] = react.useState('')
+      const [generated, setGenerated] = react.useState(false)
+      const [copied, setCopied] = react.useState(false)
+
+      react.useEffect(() => {
+        if (!templateId && templates.length > 0) setTemplateId(templates[0].id)
+      }, [templates, templateId])
+
+      const payload = () => {
+        let mcp
+        if (mcpJson.trim()) {
+          try {
+            mcp = JSON.parse(mcpJson)
+          } catch {
+            throw new Error(t('scaffoldMcpInvalid'))
+          }
+        }
+        return {
+          template: templateId,
+          ...(name.trim() ? { name: name.trim() } : {}),
+          ...(slug.trim() ? { slug: slug.trim() } : {}),
+          targetDir,
+          ...(overwrite ? { overwrite: true } : {}),
+          ...(writeAgents ? { writeAgents: true } : {}),
+          ...(processSkills ? { processSkills: true } : {}),
+          ...(mcp === undefined ? {} : { mcp }),
+        }
+      }
+      // 统一走 postJson：非 2xx（含 409 已存在）会抛出服务端 error，调用方直接展示。
+      const post = (path, body) => postJson(`${STATUS_PATH}/scaffold/${path}`, body)
+      const preview = async () => {
+        setBusy(true)
+        setError('')
+        setGenerated(false)
+        try {
+          setPlan(await post('preview', payload()))
+        } catch (failure) {
+          setError(String(failure?.message || failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+      const generate = async () => {
+        if (!targetDir.trim()) {
+          setError(t('scaffoldTargetRequired'))
+          return
+        }
+        setBusy(true)
+        setError('')
+        setGenerated(false)
+        try {
+          const data = await post('generate', payload())
+          setPlan({ ...data, files: (data.files || []).map((path) => ({ path })) })
+          setGenerated(true)
+        } catch (failure) {
+          setError(String(failure?.message || failure))
+        } finally {
+          setBusy(false)
+        }
+      }
+      const copy = async (text) => {
+        try {
+          await navigator.clipboard.writeText(text)
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1200)
+        } catch {}
+      }
+
+      const files = plan && Array.isArray(plan.files) ? plan.files : []
+      const warnings = plan && Array.isArray(plan.warnings) ? plan.warnings : []
+      const selectedTemplate = templates.find((item) => item.id === templateId)
+
+      return h('div', { style: styles.card, 'data-embodiment-scaffold': '1' },
+        h('h3', { style: styles.cardTitle }, t('scaffoldTitle')),
+        h('p', { style: sub }, t('scaffoldIntro')),
+        h('div', { style: { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '10px', marginTop: '10px' } },
+          h('label', { style: styles.field }, h('span', { style: styles.label }, t('scaffoldTemplate')),
+            h('select', { style: styles.input, value: templateId, onChange: (event) => setTemplateId(event.target.value), 'data-embodiment-scaffold-template': '1' },
+              templates.map((item) => h('option', { key: item.id, value: item.id }, `${item.name} (${item.id})${item.experimental ? ' · experimental' : ''}`)),
+            ),
+          ),
+          h('label', { style: styles.field }, h('span', { style: styles.label }, t('scaffoldSlug')),
+            h('input', { style: styles.input, value: slug, placeholder: 'my-agent', onChange: (event) => setSlug(event.target.value), 'data-embodiment-scaffold-slug': '1' }),
+          ),
+          h('label', { style: styles.field }, h('span', { style: styles.label }, t('scaffoldName')),
+            h('input', { style: styles.input, value: name, placeholder: selectedTemplate ? selectedTemplate.name : '', onChange: (event) => setName(event.target.value) }),
+          ),
+          h('label', { style: styles.field }, h('span', { style: styles.label, title: t('scaffoldTargetHint') }, t('scaffoldTarget')),
+            h('input', { style: styles.input, value: targetDir, placeholder: '/absolute/path/to/workspace', onChange: (event) => setTargetDir(event.target.value), 'data-embodiment-scaffold-target': '1' }),
+          ),
+        ),
+        h('p', { style: sub }, t('scaffoldTargetHint')),
+        h('label', { style: { ...styles.field, marginTop: '8px' } },
+          h('span', { style: styles.label }, t('scaffoldMcp')),
+          h('textarea', {
+            style: { ...styles.input, minHeight: '76px', fontFamily: 'monospace', resize: 'vertical' },
+            value: mcpJson,
+            placeholder: '[{"serverName":"github","transport":"stdio","command":"npx","args":["-y","@modelcontextprotocol/server-github"],"env":{"GITHUB_TOKEN":"${GITHUB_TOKEN}"}}]',
+            onChange: (event) => setMcpJson(event.target.value),
+            'data-embodiment-scaffold-mcp': '1',
+          }),
+        ),
+        h('p', { style: sub }, t('scaffoldMcpHint')),
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '8px', fontSize: '12px' } },
+          h('input', { type: 'checkbox', checked: overwrite, onChange: (event) => setOverwrite(event.target.checked) }),
+          h('span', null, t('scaffoldOverwrite')),
+        ),
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', fontSize: '12px' } },
+          h('input', { type: 'checkbox', checked: writeAgents, onChange: (event) => setWriteAgents(event.target.checked) }),
+          h('span', null, t('scaffoldAgents')),
+        ),
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: '6px', marginTop: '6px', fontSize: '12px' } },
+          h('input', { type: 'checkbox', checked: processSkills, onChange: (event) => setProcessSkills(event.target.checked) }),
+          h('span', null, t('scaffoldProcessSkills')),
+        ),
+        h('div', { style: { display: 'flex', gap: '8px', marginTop: '10px', flexWrap: 'wrap' } },
+          h('button', { type: 'button', style: styles.button, disabled: busy || !templateId, onClick: preview, 'data-embodiment-scaffold-preview': '1' }, t('scaffoldPreview')),
+          h('button', { type: 'button', style: styles.button, disabled: busy || !templateId, onClick: generate, 'data-embodiment-scaffold-generate': '1' }, busy ? t('scaffoldGenerating') : t('scaffoldGenerate')),
+        ),
+        error ? h('p', { style: { ...styles.error, margin: '8px 0 0' }, 'data-embodiment-scaffold-error': '1' }, `${t('scaffoldError')}: ${error}`) : null,
+        generated ? h('p', { style: sub, 'data-embodiment-scaffold-generated': '1' }, t('scaffoldGenerated')) : null,
+        plan ? h('div', { style: { marginTop: '10px' } },
+          h('div', { style: sub }, `${t('scaffoldFiles')} · ${plan.presetId || ''} · ${plan.bundleDir || ''}`),
+          plan.agentsPath ? h('div', { style: sub }, `AGENTS.md · ${plan.agentsPath}`) : null,
+          h('ul', { style: { margin: '6px 0 0', paddingLeft: '18px', fontSize: '11.5px', maxHeight: '240px', overflow: 'auto' } },
+            files.map((file) => h('li', { key: file.path }, file.path)),
+          ),
+          warnings.length > 0 ? h('div', { style: styles.banner, title: warnings.join(' | ') },
+            h('strong', null, `${t('scaffoldWarnings')}: `), warnings.join(' · '),
+          ) : null,
+          plan.installCommand ? h('div', { style: { marginTop: '8px' } },
+            h('div', { style: styles.label }, t('scaffoldInstall')),
+            h('pre', { style: { margin: '4px 0 0', whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontSize: '11.5px' } }, plan.installCommand),
+            h('button', { type: 'button', style: { ...styles.button, marginTop: '6px' }, onClick: () => copy(plan.installCommand), 'data-embodiment-scaffold-copy': '1' }, copied ? t('scaffoldCopied') : t('scaffoldCopy')),
+          ) : null,
+        ) : h('p', { style: sub }, t('scaffoldEmpty')),
+      )
+    }
+
+    function CtxPanel(props) {
+      const t = props.t
+      const [state, load] = useStatus(STATUS_PATH)
+      // data / budget 必须声明在 analyticsLimit 之前：analyticsLimit 读 budget.analyticsLimit，
+      // 而 const 在函数作用域里是 TDZ，晚于使用点声明会抛 ReferenceError 让整块面板变空。
+      const data = state.phase === 'ready' ? state.data || {} : null
+      const budget = data ? data.budget || {} : {}
+      const [tab, setTab] = react.useState('overview')
+      const [range, setRange] = react.useState('7d')
+      const [selected, setSelected] = react.useState(null)
+      const activeSession = useCurrentSession()
+      const usageTick = useUsageActivity()
+      const livePath = activeSession ? `${STATUS_PATH}/live?sessionId=${encodeURIComponent(activeSession)}` : `${STATUS_PATH}/live`
+      const inventoryPath = activeSession ? `${STATUS_PATH}/inventory?sessionId=${encodeURIComponent(activeSession)}` : `${STATUS_PATH}/inventory`
+      const analyticsLimit = Number(budget.analyticsLimit) > 0 ? Number(budget.analyticsLimit) : 40
+      const analyticsPath = `${STATUS_PATH}/analytics?range=${encodeURIComponent(range)}&limit=${analyticsLimit}`
+      const insightsPath = `${STATUS_PATH}/insights?range=${encodeURIComponent(range)}&limit=${analyticsLimit}`
+      const detailSession = selected || activeSession
+      const detailPath = detailSession ? `${STATUS_PATH}/session-detail?sessionId=${encodeURIComponent(detailSession)}` : `${STATUS_PATH}/session-detail`
+      const [liveState, reloadLive] = useLive(livePath, usageTick, Boolean(activeSession))
+      const skillsPath = activeSession ? `${STATUS_PATH}/skills?sessionId=${encodeURIComponent(activeSession)}` : `${STATUS_PATH}/skills`
+      // 技能目录只在 Settings 拉取；切换会话时会话根可能不同，因此也跟 activeSession 走。
+      const [skillsState, reloadSkills] = useLive(skillsPath, activeSession, tab === 'settings')
+      const [invState, reloadInv] = useLive(inventoryPath, usageTick, tab === 'settings')
+      const [analyticsState, reloadAnalytics] = useLive(analyticsPath, activeSession, tab === 'overview' || tab === 'trend' || tab === 'settings')
+      const [insightsState, reloadInsights] = useLive(insightsPath, activeSession, tab === 'overview')
+      const [detailState, reloadDetail] = useLive(detailPath, detailSession || activeSession, tab === 'trend' || tab === 'events')
+      const [alertsEnabled, setAlerts] = useAlertsEnabled()
+      // 切换主视图会话时清掉手动选中的历史会话，避免详情停在旧会话而头部显示新会话。
+      react.useEffect(() => {
+        setSelected(null)
+      }, [activeSession])
+      const live = liveState.data
+      const liveForHeader = live && (!activeSession || live.sessionId === activeSession) ? live : null
+      const control = data ? data.control || {} : {}
+      const measurements = data && Array.isArray(data.measurements) ? data.measurements : []
+      const latest = measurements.length > 0 ? measurements[0] : null
+      const analytics = analyticsState.data || null
+      const detail = detailState.data || null
+      const reloadAll = () => {
+        load()
+        reloadLive()
+        if (tab === 'settings') reloadInv()
+        if (tab === 'settings') reloadSkills()
+        if (tab === 'overview' || tab === 'trend' || tab === 'settings') reloadAnalytics()
+        if (tab === 'overview') reloadInsights()
+        if (tab === 'trend' || tab === 'events') reloadDetail()
+      }
+
+      const tabs = [
+        ['overview', t('tabsOverview')],
+        ['trend', t('tabsTrend')],
+        ['events', t('tabsEvents')],
+        ['settings', t('tabsSettings')],
+      ]
+
+      // tab 的 id、aria 关系与键盘交互都从这一份顺序推导，避免再手工维护第二份键列表。
+      const tabKeys = tabs.map(([key]) => key)
+      // 同一页面里面板可能同时挂在设置页和左侧整页：用 useId 让两个实例的 id 不互相覆盖。
+      // 宿主 react 没有 useId（旧版本或测试桩）时退回固定前缀；调用点始终无条件，符合 hooks 规则。
+      const useHostId = typeof react.useId === 'function' ? react.useId : () => 'embody'
+      const idPrefix = String(useHostId()).replace(/:/g, '')
+      const tabDomId = (key) => `${idPrefix}-tab-${key}`
+      const panelDomId = (key) => `${idPrefix}-tabpanel-${key}`
+      /**
+       * ARIA tabs 的标准键盘交互：←/→ 在 tab 之间循环，Home/End 跳到首尾。
+       * 切换仍然复用 setTab，和点击共用同一份状态；切完把焦点送到新 tab，方便连续按方向键。
+       */
+      const onTabKeyDown = (event) => {
+        const index = tabKeys.indexOf(tab)
+        if (index < 0 || !event || typeof event.key !== 'string') return
+        let next = null
+        if (event.key === 'ArrowRight') next = tabKeys[(index + 1) % tabKeys.length]
+        else if (event.key === 'ArrowLeft') next = tabKeys[(index - 1 + tabKeys.length) % tabKeys.length]
+        else if (event.key === 'Home') next = tabKeys[0]
+        else if (event.key === 'End') next = tabKeys[tabKeys.length - 1]
+        if (!next) return
+        event.preventDefault()
+        setTab(next)
+        const list = event.currentTarget
+        const buttons = list && typeof list.querySelectorAll === 'function' ? list.querySelectorAll('[role="tab"]') : []
+        const target = buttons[tabKeys.indexOf(next)]
+        if (target && typeof target.focus === 'function') target.focus()
+      }
+
+      // 洞察的「一键处理」：直接写配置/引导状态，成功后刷新面板数据。
+      const applyInsight = (apply) => {
+        if (!apply || typeof apply.path !== 'string') return
+        postJson(`${STATUS_PATH}${apply.path}`, apply.body || {})
+          .then(() => { reloadAll() })
+          .catch(() => { reloadAll() })
+      }
+
+      const openAction = (action) => {
+        if (!action) return
+        if (action.sessionId) setSelected(action.sessionId)
+        setTab(action.tab === 'settings' ? 'settings' : action.tab === 'events' ? 'events' : 'trend')
+        if (action.anchor) {
+          setTimeout(() => {
+            try { document.querySelector(`[data-embodiment-card="${action.anchor}"]`)?.scrollIntoView({ block: 'start' }) } catch {}
+          }, 80)
+        }
+      }
+
+      const headerSessionId = activeSession || (liveForHeader && liveForHeader.sessionId) || null
+      const headerSession = headerSessionId
+        ? (detail && detail.session && detail.session.id === headerSessionId ? detail.session : null)
+          || (analytics && Array.isArray(analytics.sessions) ? analytics.sessions.find((session) => session.id === headerSessionId) : null)
+        : null
+      const headerAggregate = headerSessionId && analytics && Array.isArray(analytics.sessions)
+        ? analytics.sessions.find((session) => session.id === headerSessionId)
+        : null
+      const headerMeta = headerAggregate || headerSession
+      const latestForSession = activeSession && latest && latest.id === activeSession ? latest : null
+      const headerUsed = liveForHeader && typeof liveForHeader.used === 'number' ? liveForHeader.used : latestForSession && typeof latestForSession.totalTokens === 'number' ? latestForSession.totalTokens : null
+      const headerBudget = liveForHeader && typeof liveForHeader.budget === 'number' ? liveForHeader.budget : typeof budget.tokens === 'number' ? budget.tokens : null
+      const headerRatio = headerUsed !== null && headerBudget !== null && headerBudget > 0 ? headerUsed / headerBudget : null
+      const headerWarnAt = liveForHeader && typeof liveForHeader.warnAt === 'number' ? liveForHeader.warnAt : typeof budget.warnAt === 'number' ? budget.warnAt : 0.75
+      const headerErrorAt = liveForHeader && typeof liveForHeader.errorAt === 'number' ? liveForHeader.errorAt : typeof budget.errorAt === 'number' ? budget.errorAt : 0.9
+      const headerDetailMatches = Boolean(headerSessionId && detail && detail.session && detail.session.id === headerSessionId)
+      const headerRequests = headerDetailMatches && Array.isArray(detail.requests) ? detail.requests.length : headerMeta && typeof headerMeta.requests === 'number' ? headerMeta.requests : null
+      let headerCost = headerMeta && typeof headerMeta.cost === 'number' ? headerMeta.cost : null
+      if (headerDetailMatches && typeof detail.session.cost === 'number') headerCost = detail.session.cost
+      const headerBreakdown = (liveForHeader && liveForHeader.breakdown) || (latestForSession && latestForSession.breakdown) || null
+      const headerCategories = breakdownCategories(t, headerBreakdown)
+      const hasHeaderComposition = headerCategories.some((row) => (Number(row.tokens) || 0) > 0)
+      const headerParts = []
+      if (headerSession && headerSession.title) headerParts.push(`${t('sessionLabel')} ${headerSession.title}`)
+      if (headerUsed !== null && headerBudget !== null && headerBudget > 0) {
+        headerParts.push(`${t('ratio')} ${compactTokens(headerUsed)} / ${compactTokens(headerBudget)}（${formatPercent(headerRatio, 0)}，${t('pluginBudgetTag')}）`)
+        headerParts.push(`${t('remaining')} ${compactTokens(Math.max(0, headerBudget - headerUsed))}`)
+      } else if (headerMeta && typeof headerMeta.tokens === 'number') {
+        // 历史会话可能不在当前进程的 live 表里；此时至少给出该会话累计 tokens，而不是让头部空着。
+        headerParts.push(`${t('kpiTokens')} ${compactTokens(headerMeta.tokens)}`)
+      }
+      if (headerRequests !== null) headerParts.push(`${headerRequests} ${t('requestsUnit')}`)
+      if (headerCost !== null) headerParts.push(`${t('costEstimateLabel')} ${formatCost(headerCost)}`)
+      const headerLine = headerParts.length > 0 ? headerParts.join(' · ') : t('description')
+
+      const children = [
+        h('div', { key: 'header', style: styles.headerCard },
+          h('div', { style: styles.headerRow },
+            h('h2', { style: styles.title }, props.title || t('title')),
+            data && data.version ? h('span', { style: styles.versionChip, title: `${t('versionLabel')}: ${data.version}`, 'data-embodiment-version': String(data.version) }, `v${data.version}`) : null,
+            h('span', { style: styles.headerSpacer }),
+            control.active ? h(StatusBadge, { t, state: control.compacting ? 'warn' : 'ok', label: control.compacting ? t('compacting') : undefined }) : null,
+            h('button', { type: 'button', style: styles.button, onClick: reloadAll, 'data-embodiment-refresh': '1' }, t('refresh')),
+          ),
+          h('p', { style: styles.subtitle, 'data-embodiment-header-status': '1' }, headerLine),
+          hasHeaderComposition
+            ? h(SegmentedBar, { t, usedRatio: headerRatio ?? 0, categories: headerCategories, warnAt: headerWarnAt, errorAt: headerErrorAt, ticks: true, tickLabels: { warn: t('warnAt'), error: t('errorAt') } })
+            : null,
+          hasHeaderComposition ? h(LegendGrid, { categories: headerCategories, tokensLabel: t('tokens') }) : null,
+          h('div', { style: styles.tabs, role: 'tablist', 'aria-label': t('tabsLabel'), onKeyDown: onTabKeyDown }, tabs.map(([key, label]) =>
+            h('button', {
+              key,
+              type: 'button',
+              role: 'tab',
+              id: tabDomId(key),
+              'aria-selected': tab === key ? 'true' : 'false',
+              'aria-controls': panelDomId(key),
+              // 只有当前 tab 留在 Tab 键序列里，方向键切换时把焦点送到新 tab。
+              tabIndex: tab === key ? 0 : -1,
+              style: { ...styles.tab, ...(tab === key ? styles.tabActive : null) },
+              onClick: () => setTab(key),
+              'data-embodiment-tab': key,
+            }, label),
+          )),
+          tab === 'overview' ? h('div', { style: styles.rangeRow },
+            [['7d', t('range7')], ['30d', t('range30')], ['all', t('rangeAll')]].map(([key, label]) =>
+              h('button', { key, type: 'button', style: { ...styles.rangeBtn, ...(range === key ? styles.rangeBtnOn : null) }, onClick: () => setRange(key), 'data-embodiment-range': key }, label),
+            ),
+          ) : null,
+        ),
+      ]
+
+      // 卡片级边界包装：每张卡失败只降级自己，不影响同 tab 的其它卡片。
+      const guard = (key, node) => h(CardBoundary, { key, t }, node)
+      // tab 专属内容先进 body，最后统一放进 role=tabpanel；内容区再套一层边界，
+      // 保证内容区整体失败时面板头部、告警条等仍然可用。
+      const body = []
+      const renderPanel = () =>
+        h('div', { style: styles.root, 'data-embodiment-panel': '1' }, children.concat(
+          // 每个 tab 各一个 tabpanel：非当前 tab 的 panel 只作占位（hidden、无内容），
+          // 这样每个 tab 的 aria-controls 都能解析到真实节点；只有当前 tab 的 panel 承载内容。
+          tabKeys.map((key) => h('div', {
+            key,
+            role: 'tabpanel',
+            id: panelDomId(key),
+            'aria-labelledby': tabDomId(key),
+            ...(tab === key ? { style: styles.tabPanel } : { hidden: true }),
+          }, tab === key ? h(CardBoundary, { t }, body) : null)),
+        ))
+
+      if (alertsEnabled) {
+        children.push(guard('alerts', h(AlertStrip, {
+          t,
+          live: liveForHeader,
+          control,
+          onOpen: (target) => {
+            if (typeof target === 'string') setTab(target)
+            else openAction(target)
+          },
+        })))
+      }
+
+      if (data && data.onboarding && !data.onboarding.completed && !data.onboarding.dismissed && tab === 'overview') {
+        children.push(guard('onboarding', h(OnboardingCard, { t, data, onDone: reloadAll })))
+      }
+
+      // 宿主已更新但当前页面还是旧客户端 bundle：提示刷新页面。DSH 的客户端模块
+      // 图不会替换已加载的包代码；刷新页面即可，不需要重启整个 DSH。
+      if (data && data.version && data.version !== CLIENT_VERSION) {
+        children.push(h('div', {
+          key: 'versionMismatch',
+          style: styles.banner,
+          'data-embodiment-version-mismatch': '1',
+          title: `${CLIENT_VERSION} → ${data.version}`,
+        },
+          h('span', null, t('reloadHint')),
+          h('button', {
+            type: 'button',
+            style: styles.button,
+            'data-embodiment-reload': '1',
+            onClick: () => {
+              try {
+                globalThis.location.reload()
+              } catch {}
+            },
+          }, t('reloadUi')),
+        ))
+      }
+
+      if (state.phase === 'loading') {
+        body.push(h('div', { key: 'loading', style: styles.card }, h('div', { style: styles.skeletonStack },
+          h('div', { style: { ...styles.skeleton, width: '38%', height: '14px' } }),
+          h('div', { style: { ...styles.skeleton, width: '100%', height: '84px' } }),
+          h('div', { style: { ...styles.skeleton, width: '64%' } }),
+        )))
+        return renderPanel()
+      }
+      if (state.phase === 'error') {
+        body.push(h('div', { key: 'error', style: styles.emptyState },
+          h('p', { style: styles.error }, humanizeError(state.message, t)),
+          h('button', { type: 'button', style: styles.button, onClick: reloadAll }, t('retry')),
+        ))
+        return renderPanel()
+      }
+
+      if (tab === 'overview') {
+        body.push(guard('kpis', h(KpiBand, { t, kpi: analytics ? analytics.kpi : {}, coverage: analytics ? analytics.coverage : null })))
+        if (analytics) body.push(guard('billing', h(BillingCard, { t, kpi: analytics.kpi, pricing: data ? data.pricing : null })))
+        if (analytics && analytics.savings) body.push(guard('savings', h(SavingsCard, { t, savings: analytics.savings })))
+        if (insightsState.data && Array.isArray(insightsState.data.insights)) {
+          body.push(guard('insights', h(InsightCards, { t, insights: insightsState.data.insights, onOpen: openAction, onApply: applyInsight })))
+        }
+        if (analyticsState.error && !analytics) {
+          body.push(h('div', { key: 'analyticsError', style: styles.emptyState },
+            h('p', { style: styles.error }, humanizeError(analyticsState.error, t)),
+            h('button', { type: 'button', style: styles.button, onClick: reloadAnalytics }, t('retry')),
+          ))
+        } else if (!analytics) {
+          body.push(h('div', { key: 'analyticsLoading', style: styles.banner }, t('analyticsLoading')))
+        }
+        if (analytics) {
+          body.push(guard('charts', h('div', { style: styles.card }, h(DailyChart, { t, daily: analytics.daily }))))
+        }
+        body.push(guard('sessions', h(SessionCards, { t, sessions: analytics ? analytics.sessions : [], selected: detailSession, onSelect: (id) => { setSelected(id); setTab('trend') }, onOpen: (item) => { openSessionInSidebar(item.title || shortSessionId(item.id), item.id) } })))
+        if (analytics && Array.isArray(analytics.warnings) && analytics.warnings.length > 0) {
+          body.push(h('div', { key: 'warnings', style: styles.banner, title: analytics.warnings.join(' | ') }, `${t('coverage').replace('{scanned}', analytics.coverage.scanned).replace('{total}', analytics.coverage.total)} · ${t('readFailures').replace('{count}', String(analytics.warnings.length))}`))
+        }
+      } else if (tab === 'trend') {
+        body.push(guard('trend', h(TrendCard, { t, detail, error: detailState.error, budget: (liveForHeader && liveForHeader.budget && liveForHeader.budget.tokens) || (latestForSession && latestForSession.budget && latestForSession.budget.tokens) || budget.tokens })))
+        if (analytics && Array.isArray(analytics.sessions)) body.push(guard('compare', h(SessionCompare, { t, sessions: analytics.sessions })))
+        if (selected) body.push(h('button', { key: 'back', type: 'button', style: styles.button, onClick: () => setSelected(null) }, t('tabsOverview')))
+      } else if (tab === 'events') {
+        body.push(guard('events', h(EventsCard, { t, logs: control.log || [], detail })))
+      } else {
+        if (data && data.health) body.push(guard('health', h(HealthCard, { t, health: data.health, control, onDone: reloadAll })))
+        // 首次引导跳过/完成后，仍可从设置里重新打开（onboardingReopen 此前已定义但从未渲染）。
+        if (data && data.onboarding && (data.onboarding.dismissed || data.onboarding.completed)) {
+          body.push(guard('onboarding-reopen', h(OnboardingReopen, { t, data, onDone: reloadAll })))
+        }
+        // 本会话预算：面板入口，等价 /embody <tokens>；无活动会话时只显示说明。
+        body.push(guard('session-budget', h(SessionBudgetCard, {
+          t,
+          sessionId: activeSession,
+          current: latestForSession && latestForSession.override,
+          budget: budget.tokens,
+          onDone: reloadAll,
+        })))
+        // 设置页三列各自兜一层：某一列抛错时另外两列照常可用。
+        body.push(guard('settings', h('div', { style: styles.cols },
+          guard('control', h(ControlSection, { t, control, onToggled: load })),
+          guard('config', h(ConfigSection, { t, budget, editable: Boolean(data.configEditable), onSaved: load })),
+          guard('balance-display', h(BalanceDisplayCard, { t })),
+        )))
+        body.push(guard('inventory', h(InventoryCard, { t, data: invState.data, loading: invState.data === null && invState.error === null, error: invState.data === null ? invState.error : null, reload: reloadInv, sessionId: activeSession, controlActive: Boolean(control.active) })))
+        body.push(guard('skills', h(SkillsCard, { t, data: skillsState.data, loading: skillsState.data === null && skillsState.error === null, error: skillsState.data === null ? skillsState.error : null, reload: reloadSkills, sessionId: activeSession })))
+        body.push(guard('pricing', h(PricingSection, { t, pricing: data ? data.pricing : null, editable: Boolean(data.configEditable), onSaved: load })))
+        body.push(guard('data', h(DataCard, { t, range, coverage: analytics ? analytics.coverage : null, alertsEnabled, onAlertsChange: setAlerts, onDone: reloadAll })))
+        body.push(guard('labs', h(LabsCard, { t })))
+      }
+      return renderPanel()
+    }
+    function CtxPage(props) {
+      return h(
+        'div',
+        { style: styles.page },
+        // 再兜一层：面板整体渲染失败时给出可读提示，而不是让宿主边界把主区域整块清空。
+        h('div', { style: styles.pageInner }, h(CardBoundary, { t: props.t }, h(CtxPanel, { ...props, title: props.t('pageTitle') }))),
+      )
+    }
+
+    function CtxIcon(props) {
+      const size = Number(props && props.size) || 18
+      const active = Boolean(props && props.active)
+      return h(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: active ? 2 : 1.6,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': 'true',
+          style: { opacity: active ? 1 : 0.75 },
+        },
+        h('path', { d: 'M4 15a8 8 0 0 1 16 0' }),
+        h('path', { d: 'M12 15l4.2-4.2' }),
+        h('circle', { cx: 12, cy: 15, r: 1.4, fill: 'currentColor', stroke: 'none' }),
+      )
+    }
+
+    /**
+     * 同一个页面里这个包可能被挂载两次（静态 bundle + 后续激活）。
+     * DSH 的槽位表不会按同 id 去重，重复 apply 会出现两个 ctx 导航/设置/ dock，
+     * 所以用 window 级标记做幂等；插件卸载时由 effect 清除，允许后续重新挂载。
+     */
+    const MOUNT_FLAG = '__agentEmbodimentMounted'
+    const MOUNT_DISPOSERS = '__agentEmbodimentSlotDisposers'
+    let mounted = false
+
+    /** @param {unknown} ctx - 浏览器 cordis 上下文（slots / locale） */
+    function apply(ctx) {
+      const scope = typeof window !== 'undefined' ? window : null
+      // 同一份 bundle 被重复 apply（静态 bundle + 后续激活）：跳过，避免重复导航/设置/dock。
+      if (mounted) return undefined
+      if (scope && scope[MOUNT_FLAG] === CLIENT_VERSION) return undefined
+      mounted = true
+      if (scope) {
+        // HMR 热更新 client.js 时，必须先把上一个 bundle 留下的槽位注册释放掉。
+        // 否则新组件注册不上、旧注册又随旧模块被清理，表现为「侧栏还有入口、主区域空白」。
+        const previous = scope[MOUNT_DISPOSERS]
+        if (Array.isArray(previous)) {
+          for (const dispose of previous) {
+            try {
+              dispose()
+            } catch {}
+          }
+        }
+        scope[MOUNT_FLAG] = CLIENT_VERSION
+        scope[MOUNT_DISPOSERS] = []
+        if (typeof ctx.effect === 'function') {
+          ctx.effect(() => () => {
+            mounted = false
+            try {
+              delete scope[MOUNT_FLAG]
+              delete scope[MOUNT_DISPOSERS]
+            } catch {}
+          }, 'agent-embodiment: mount guard')
+        }
+      }
+      /** 记录槽位注册的释放函数，供下一个 bundle 挂载前清理。 */
+      const track = (dispose) => {
+        if (scope && Array.isArray(scope[MOUNT_DISPOSERS]) && typeof dispose === 'function') scope[MOUNT_DISPOSERS].push(dispose)
+        return dispose
+      }
+
+      ctx.effect(() => ctx.locale.register(NS, { en, zh }), 'agent-embodiment: dictionaries')
+
+      // prefers-reduced-motion：关闭本插件面板 / dock 的过渡与动画（不改宿主样式）。
+      ctx.effect(() => {
+        if (typeof document === 'undefined' || !document.head) return () => {}
+        const styleId = 'agent-embodiment-reduced-motion'
+        if (document.getElementById(styleId)) return () => {}
+        const style = document.createElement('style')
+        style.id = styleId
+        style.textContent =
+          '@media (prefers-reduced-motion: reduce){[data-embodiment-panel],[data-embodiment-panel] *,[data-embodiment-dock],[data-embodiment-dock] *{transition-duration:0.01ms !important;animation-duration:0.01ms !important;animation-iteration-count:1 !important;scroll-behavior:auto !important}}'
+        document.head.appendChild(style)
+        return () => {
+          try {
+            style.remove()
+          } catch {}
+        }
+      }, 'agent-embodiment: reduced motion')
+
+      // 键盘焦点环：行内样式表达不了 `:focus-visible`（需要 CSS 伪类），所以沿用上面
+      // reduced-motion 的做法注入一小段作用域受限的 <style>。只匹配本插件自己的属性标记，
+      // 不碰宿主样式；鼠标点击时 `:focus-visible` 不命中，因此不会多出视觉噪声。
+      ctx.effect(() => {
+        if (typeof document === 'undefined' || !document.head) return () => {}
+        const styleId = 'agent-embodiment-focus-ring'
+        if (document.getElementById(styleId)) return () => {}
+        const style = document.createElement('style')
+        style.id = styleId
+        style.textContent =
+          ':is([data-embodiment-panel],[data-embodiment-dock],[data-embodiment-balance]) :is(button,input,textarea,select,a[href],[tabindex]):focus-visible,[data-embodiment-dock]:focus-visible,[data-embodiment-balance]:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#4f7cff);outline-offset:2px;border-radius:6px}'
+        document.head.appendChild(style)
+        return () => {
+          try {
+            style.remove()
+          } catch {}
+        }
+      }, 'agent-embodiment: focus ring')
+
+      // 事件驱动刷新：监听会话区域的 DOM 变化（流式输出、消息更新、切换会话），2s 节流。
+      // 忽略本插件自己的 UI（dock/面板），避免自触发循环。
+      ctx.effect(() => {
+        if (typeof MutationObserver !== 'function' || !document.body) return () => {}
+        const observer = new MutationObserver((records) => {
+          for (const record of records) {
+            const target = record.target.nodeType === 1 ? record.target : record.target.parentElement
+            if (target && typeof target.closest === 'function' && (target.closest('[data-embodiment-dock]') || target.closest('[data-embodiment-panel]'))) continue
+            notifyUsageActivity()
+            return
+          }
+        })
+        observer.observe(document.body, { subtree: true, childList: true, characterData: true })
+        return () => observer.disconnect()
+      }, 'agent-embodiment: usage activity observer')
+      if (typeof ctx.inject === 'function') ctx.inject(['sessions'], (sub) => {
+        publishSessionService(sub?.sessions ?? null)
+        if (typeof sub.effect === 'function') sub.effect(() => () => { publishSessionService(null) }, 'agent-embodiment: sessions presence')
+      })
+      // uiWorkspace 提供官方 openSession；优先走它，避免模拟侧栏点击。
+      if (typeof ctx.inject === 'function') ctx.inject(['uiWorkspace'], (sub) => {
+        workspaceService = sub?.uiWorkspace ?? null
+        if (typeof sub.effect === 'function') sub.effect(() => () => { workspaceService = null }, 'agent-embodiment: uiWorkspace presence')
+      })
+      // 账号余额来自 DSH 官方 remote.account；没有账号扩展时自动隐藏胶囊。
+      if (typeof ctx.inject === 'function') ctx.inject(['remote', 'remote.account'], (sub) => {
+        publishAccountRemote(sub?.remote?.account ?? null)
+        if (typeof sub.effect === 'function') sub.effect(() => () => { publishAccountRemote(null) }, 'agent-embodiment: account presence')
+      })
+      const t = ctx.locale.bind(NS)
+      const face = () => ({ t })
+      const accountMeta = () => ({
+        version: CLIENT_VERSION,
+        locale: ctx.locale.getSnapshot?.()?.active || 'zh',
+        timezoneOffsetSeconds: -new Date().getTimezoneOffset() * 60,
+      })
+
+      // 1) 设置 → 上下文
+      ctx.slots.inject('settings.section', () =>
+        track(
+          ctx.slots.register(
+            { name: 'settings.section', id: CONFIG_NAMESPACE, order: 40, locale: NS, label: () => t('nav'), inject: face },
+            CtxPanel,
+          ),
+        ),
+      )
+
+      // 2) 左侧导航整页 + 图标
+      ctx.slots.inject('main', () => track(ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: face }, CtxPage)))
+      ctx.slots.inject('sidebar.panellist', () =>
+        track(ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 20, locale: NS, label: () => t('panel') }, CtxIcon)),
+      )
+
+      // 3) 输入框下方指示器（与内置 ContextMeter 同排版，可点开小明细）
+      ctx.slots.inject('conversation.composer.dock', () =>
+        track(ctx.slots.register({ name: 'conversation.composer.dock', id: 'embody-usage', order: 10, locale: NS, inject: face }, (props) => {
+          const [active, setActive] = react.useState(false)
+          react.useEffect(() => {
+            let cancelled = false
+            fetchJson(STATUS_PATH)
+              .then((payload) => {
+                if (!cancelled && payload && payload.control) setActive(Boolean(payload.control.active))
+              })
+              .catch(() => {})
+            return () => {
+              cancelled = true
+            }
+          }, [])
+          return h(CtxDock, { ...props, t, controlActive: active })
+        })),
+      )
+
+      // 4) 同一个底部状态行里的 DSH 余额胶囊，排在 ctx 指示器之后。
+      ctx.slots.inject('conversation.composer.dock', () =>
+        track(
+          ctx.slots.register(
+            { name: 'conversation.composer.dock', id: 'embody-balance', order: 20, locale: NS, inject: face },
+            (props) => h(BalanceDock, { ...props, t, meta: accountMeta }),
+          ),
+        ),
+      )
+
+      // 5) 挂载成功后在 window 上留一个只读探针：Desktop 的 CDP 只有 host inspector target，
+      //    拿不到面板 DOM；有了这个对象就能用 Runtime.evaluate 断言「版本 + 是否挂载成功」。
+      const marker = {
+        version: CLIENT_VERSION,
+        panelId: PANEL_ID,
+        slots: ['settings.section', 'main', 'sidebar.panellist', 'conversation.composer.dock', 'conversation.composer.dock'],
+        mountedAt: new Date().toISOString(),
+        helpers: { pricingDraft, pricingPayload },
+      }
+      try {
+        if (typeof window !== 'undefined') window.__agentEmbodiment = marker
+      } catch {}
+    }
+
+    exports.apply = apply
+    exports.inject = inject
+    return module.exports
+  },
+})

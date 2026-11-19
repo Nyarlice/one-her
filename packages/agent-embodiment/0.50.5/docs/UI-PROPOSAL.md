@@ -1,0 +1,270 @@
+# UI 优化提案（同类插件调研 + 改动方案）
+
+> 状态：**P0/P1 已实施，P2 部分实施**，当前版本 `agent-embodiment@0.24.0`；用户已确认：概览卡用环形图、内容多时默认折叠、Dock 加「打开完整面板」、只做「仅看已启用」筛选（搜索后置），并批准按 P0/P1/P2 推进整页信息架构。
+>
+> 调研日期：2026-10-18；参考版本：`agent-embodiment@0.14.13`；最新变更见第 8 节（0.24.0）。
+
+## 1. 调研范围
+
+DSH STORE 目录（816 条）中筛出 **39 个**与「上下文 / token 用量 / 压缩」相关的插件，重点分析 4 个有代表性的 UI：
+
+| 插件 | 类型 | 值得借鉴的 UI 做法 |
+| --- | --- | --- |
+| [dsh-context](https://github.com/bowenliang123/dsh-context)（v0.66.1，本机已装） | 全量上下文仪表盘 | 2 列卡片网格；KPI 数字块；环形图 + 图例（颜色小方点 + 右侧对齐数值 + 百分比）；可折叠 Context Browser 行；`Live (Next Request)` 下拉；状态 tab；hover tooltip |
+| [DSH Token Monitor](https://github.com/AI-Scarlett/DSH_TokenMonitor) | 用量统计 | 设置页紧凑指标卡（4 列网格：Total/Input/Output/Cache …）；范围 pills（Today/7D/All）；provider/model 过滤行；可展开表格行 |
+| [dsh-token-usage-sidebar](https://github.com/y2zyyr/dsh-token-usage-sidebar) | 侧栏用量摘要 | 侧栏摘要 + 设置页指标卡 + 范围选择；数据为空/未测量时有明确文案，不用 0 冒充 |
+| [dsh-context-actions](https://github.com/CN-Hang/dsh-context-actions) | 上下文动作按钮 | 在 composer 圆环弹层底部放「压缩 / 交接」+ 一行状态反馈；先探测预设是否可压缩，不可用给可操作提示 |
+
+参考截图（原始链接）：
+
+- dsh-context 会话面板：<https://raw.githubusercontent.com/bowenliang123/dsh-context/main/docs/context-overview.png>
+- dsh-context Insights 页：<https://raw.githubusercontent.com/bowenliang123/dsh-context/main/docs/context-dashboard.png>
+- dsh-context 统计卡：<https://raw.githubusercontent.com/bowenliang123/dsh-context/main/docs/context-stats.png>
+- dsh-token-usage-sidebar 设置页：<https://raw.githubusercontent.com/y2zyyr/dsh-token-usage-sidebar/main/docs/screenshots/token-usage-settings-en-v1.1.5.png>
+
+其余同类（未逐一细看 UI，仅确认存在竞争/重叠）：DSH Token Heatmap、DSH Usage Dashboard(+Plus)、DSH Token Stats、Billion Context DSH、DSH Adaptive Context、DSH Command Context Trim、DSH Token Optimizer、DSH Token Ledger、DSH Usage Mini/Meter/Unified 等。
+
+## 2. 当前 UI 与问题清单
+
+当前截图：`docs/ui/current-panel-empty.png`（空会话）、`docs/ui/current-panel-session.png`（有历史会话）。
+
+### P0（布局 bug / 明显空白，优先修）
+
+| # | 问题 | 证据 | 建议 |
+| --- | --- | --- | --- |
+| P0-1 | 概览卡被撑到约 320px 高，下半截大片空白 | `client.js` 中 `styles.card` 带 `flex: '1 1 320px'`（L413），但 `styles.root` 是纵向 flex（L406），纵向 flex-basis 直接变成卡片高度 | 卡片默认 `flex: '0 0 auto'`；只在 `.cols` 横向容器里的子卡设 `flex:'1 1 320px'` |
+| P0-2 | 工具/提示词空态同样占满高卡（约 300px），空态文案孤零零在左上角 | 同上 + 空态未单独布局 | 空态/加载态改为高度自适应的虚线框，文案 + 刷新按钮居中；加载时 3 行 skeleton |
+| P0-3 | 四色图例挤在一行、数值不右对齐，颜色只靠 chip 左侧小色块 | 截图：`提示词 0.0% · 0%` 等 | 借鉴 dsh-context：2×2 网格，每项 = 颜色小方点 + 名称 + `值 · 百分比` 右对齐，`tabular-nums` |
+| P0-4 | 没有总体状态徽章（正常/警告/超限），阈值只是两段纯文本 | 截图「警告阈值 75% 超限阈值 90%」 | 顶部加状态 badge（用 `--dsw-alias-state-success/warn/error-primary` 着色），阈值放到 badge 的 tooltip |
+
+### P1（信息层级与交互效率）
+
+| # | 问题 | 借鉴 | 建议 |
+| --- | --- | --- | --- |
+| P1-1 | 概览卡层级弱：`0.0%`、`0 / 128K`、bar、图例几乎是同一视觉权重 | dsh-context 的 `Context Stats` 卡：大数字 + 环形图 + 图例分组 | 概览卡重排为 hero：左侧大号百分比 + 8px 圆角分段条（可选环形图），右侧 KPI 小格（已用 / 剩余 / 阈值）；图例 2×2 网格放到底部 |
+| P1-2 | 控制卡 3 行说明 + 超长按钮文案，信息重复 | dsh-context 的 badge + 一行说明；context-actions 的「状态反馈行」 | 顶部一行：状态 badge + `已启用 · idle · 最近压缩 215K→80K`；长说明收进「?」tooltip / details；按钮改为「停用自动压缩」danger ghost |
+| P1-3 | 全局配置卡：输入框无单位提示、保存按钮和提示语分离 | token-usage-settings 的紧凑字段卡 | label 后加单位（tokens / 0–1）；输入框右侧显示当前来源（config / default / session）；保存后行内「已保存，重启后完全生效」 |
+| P1-4 | 工具与提示词卡：列表长时缺少筛选/搜索；分组头会随滚动消失 | dsh-context 的 Context Browser 折叠行 + 搜索过滤 | 加搜索框 + 「仅看已启用」筛选；分组头 sticky；每行沿用现有 session/global 开关；行高压缩到 36px |
+| P1-5 | Dock HUD：已有圆环 + 点击 popover（结构不错），但缺状态文案与入口 | dsh-context-actions 在 composer 弹层底部放入口 | 保留圆环；>75% 时圆环变警告色并在 tooltip 加「接近上限」；popover 底部加「打开完整面板」；补 `:focus-visible` 焦点环 |
+| P1-6 | 空态/错误态文案不一致（加载是纯文字、错误只有一行 message） | token-usage-sidebar 的「未测量」明确文案 | 统一三态组件：skeleton / 虚线空态 / 错误卡（图标 + message + 重试） |
+
+### P2（可选增强）
+
+- 卡片头加折叠按钮（记住 `localStorage`），窄屏默认折叠「工具与提示词」；
+- `prefers-reduced-motion` 下关闭过渡；
+- 数值 hover tooltip 给精确 token 数（卡片显示 compact 值）；
+- 概览条加「上一轮增量」标记（`+320` 这类，参考 dsh-context 的 `+320` badge）。
+
+## 3. 视觉 token 对齐（参考 dsh-context 的实现方式）
+
+dsh-context 的客户端样式大量使用 DSH 主题变量与过渡变量（统计：`--dsw-alias-label-secondary` 116 次、`--ds-transition-duration`/`--ds-ease-in-out` 各 59 次、`font-variant-numeric: tabular-nums` 35 次）。建议本插件同样对齐：
+
+- 状态色：`--dsw-alias-state-success-primary` / `--dsw-alias-state-warn-primary` / `--dsw-alias-state-error-primary`（替代目前写死的 ratio 颜色）
+- 品牌色：`--dsw-alias-brand-primary`
+- 动效：`transition: background-color var(--ds-transition-duration, .2s) var(--ds-ease-in-out, ease-in-out)`
+- 基础面：`bg-layer-1/2`、`border-l1/l2`、`interactive-bg-hover`（现有已用，保留）
+- 数字：所有百分比/token 数字加 `font-variant-numeric: tabular-nums`
+- 圆角/间距：卡片 12px、卡内 gap 10px、区块间距 12px（保持现状）
+
+## 4. 建议落地顺序与验收
+
+| 阶段 | 内容 | 预计 |
+| --- | --- | --- |
+| P0 | 卡片高度 bug、空态/加载态、图例对齐、状态 badge | ~1 小时 |
+| P1 | 概览卡 hero 布局、控制卡精简、配置卡单位/反馈、列表筛选、Dock 细节 | ~2–3 小时 |
+| P2 | 折叠、动效、tooltip、增量 badge | ~1 小时 |
+
+验收方式（与之前一致）：headless Edge 截图对比 + DOM/console 断言，覆盖
+
+- 空会话 / 有历史会话 / 接近上限三态；
+- 1400px / 900px / 600px 三档宽度；
+- 明暗主题各一张截图；
+- `static` / `smoke` 测试保持全过。
+
+## 5. 已确认的选项（2026-10-18）
+
+1. 概览卡用**环形图**（大号进度环 + 中心百分比 + 右侧 KPI 小格）。
+2. 「工具与提示词」内容多（> 6 项）时**默认折叠**，内容少时自动展开。
+3. Dock 弹层底部加「**打开完整面板**」按钮，点击跳到侧栏 ctx 页。
+4. 列表只做「**仅看已启用**」筛选，搜索后置。
+
+## 6. 实施记录（v0.14.19）
+
+| 改动 | 文件位置 |
+| --- | --- |
+| 修掉卡片被纵向 flex-basis 撑高的布局 bug（概览/工具卡不再有大片空白） | `client.js` `styles.card` / `styles.cardFill` |
+| 概览卡 hero：104px 环形图 + 中心百分比 + 已用/上限/剩余 KPI + 8px 分段条 + 2×2/4 列图例（右对齐数值） | `BigRing` / `LegendGrid` / `OverviewCard` |
+| 顶部状态 badge（正常/警告/超限），阈值 chip 用 `state-warn/error` 语义色 | `StatusBadge` / `styles.badge*` / `styles.thresholdChip` |
+| 控制卡压缩成「状态 badge + 一行说明 + 最近压缩小卡 + 按钮行」，未启用用中性 badge | `ControlSection` |
+| 全局配置卡：字段加单位（tokens / 0–1）、显示来源（`来源: default`）、保存/错误行内反馈、主按钮样式 | `ConfigSection` / `styles.fieldLabelRow` / `styles.buttonPrimary` |
+| 工具与提示词：加载 skeleton、错误态（重试）、空态虚线框；「仅看已启用」筛选 + 启用/总数；≤6 项自动展开 | `InventoryCard` / `useLive` |
+| Dock：警告/超限状态进 tooltip，弹层底部加「打开完整面板」 | `CtxDock` / `openCtxPanelPage` |
+| 修正 `--dsw-alias-state-warning-primary` → 实际存在的 `--dsw-alias-state-warn-primary`（原先阈值颜色不生效） | `ratioColor` |
+| P2：卡片头加折叠按钮，折叠状态记忆到 `localStorage`（key `agent-embodiment:collapsed:v1`），刷新后保持 | `Card` / `COLLAPSED_STORAGE_KEY` |
+| P2：`prefers-reduced-motion: reduce` 时关闭面板与 dock 的过渡/动画（注入独立 `<style>`，不改宿主样式） | `apply`（reduced motion effect） |
+| P2：精确 token 数 tooltip（环形图、KPI、图例、dock 触发器） | `BigRing` / `OverviewCard` / `LegendGrid` |
+| P2：概览新增「较上次同步」增量 KPI（同会话内两次刷新的差值，切换会话时重置） | `OverviewCard` |
+| 控制卡新增可折叠「压缩记录」：成功/失败各占一行或多行、一条一块，失败原因单独换行；记录持久化到 JSONL | ControlSection / state.js / control.js / index.js |
+
+实施后截图：
+
+- 有真实用量（1400px，暗色）：`docs/ui/current-panel-session.png`
+- 空会话：`docs/ui/current-panel-empty.png`
+- 浅色主题：`docs/ui/current-panel-light.png`
+- 900px / 600px 窄屏：`docs/ui/current-panel-900.png`、`docs/ui/current-panel-600.png`
+- 卡片折叠（刷新后仍保持）：`docs/ui/current-panel-collapsed.png`
+- Dock 弹层：`docs/ui/current-dock-popover.png`
+
+![实施后的 ctx 面板（有真实用量）](ui/current-panel-session.png)
+
+![浅色主题](ui/current-panel-light.png)
+
+![卡片折叠（刷新后保持）](ui/current-panel-collapsed.png)
+
+![实施后的空态](ui/current-panel-empty.png)
+
+![Dock 弹层（底部新增「打开完整面板」）](ui/current-dock-popover.png)
+
+![控制卡压缩记录（暗色）](ui/current-compaction-log.png)
+
+![控制卡压缩记录（浅色）](ui/current-compaction-log-light.png)
+
+![阈值驱动显示（74% 按 errorAt 0.6 判为已超限）](ui/current-thresholds-config.png)
+
+![triggerAt 0.5 预压缩触发记录](ui/current-trigger-prefire.png)
+
+![targetAt 目标比例与四个阈值 chip](ui/current-target-at.png)
+
+![预压缩无历史时静默跳过（压缩记录 0、无 lastError）](ui/current-precheck-skip.png)
+
+![WSL 长会话实测压缩完成（5 条历史/约 2559 tokens，耗时 43.5s）](ui/current-compaction-latency.png)
+
+## 7. v0.15.0 落地：整页 tabs + 跨会话洞察
+
+参考截图里的信息密度，把单页堆叠改成 **概览 / 趋势 / 事件 / 设置** 四个 tab；不复制整块「Context Insights」仪表盘，优先保留压缩可解释性与控制，再加轻量跨会话总览。
+
+| 项目 | 落地 | 证据 |
+| --- | --- | --- |
+| P0 整页 tabs + sticky header | 四个 tab、范围 chips、刷新、正常/压缩中 badge | `docs/ui/0.15-overview.png` |
+| P0 压缩记录可解释 | 前→后、target、轮次、耗时、成功/失败筛选；`state.js` 持久化新字段 | `docs/ui/0.15-events.png` |
+| P0 逐轮趋势 | 请求 prompt/output 柱状 + 压缩标记 + 压缩耗时列表 | `docs/ui/0.15-trend.png` |
+| P0 加载/错误/空态/重试 | 各 tab 的 skeleton、错误 banner、retry；空态文案 | 截图与 static 测试 |
+| P1 宿主聚合 | `/status/analytics`、`/status/session-detail`；`sessionQuery` + `metrics.js` 纯折叠 | `test/metrics.mjs` 18/18 |
+| P1 KPI 带 | 会话/tokens/缓存命中/费用估算/工具调用/活跃时长/压缩次数 | `docs/ui/0.15-overview.png` |
+| P1 每日图 + 会话卡 | 7/30 天每日 tokens、活跃度热力；搜索/排序/展开/点击看趋势/打开会话 | 同上 |
+| P1 设置合并 | 控制 + 全局配置 + 工具与提示词集中到设置 tab | `docs/ui/0.15-settings.png` |
+| P2 热力 + 事件时间线 | 已做活动热力与压缩时间线；上下文浏览/drilldown/agent 网络未做 | 见下方局限 |
+| 可维护性 | 新增宿主 `metrics.js`；折叠/聚合有纯函数测试；CSS token 与复用组件 | `test/metrics.mjs` |
+
+**未做与原因**：
+
+- 费用只对已知 DeepSeek 模型估算；当前 WSL 的 `agnes-3.0-flash` 无价格，显示 `—` 而不是编一个数字。
+- 跨会话只扫描最近 40 个会话（界面标注覆盖率）；全量扫描会随会话增长变慢。
+- 点击会话卡在页内看趋势；「打开会话」用标题匹配左侧会话列表做 DOM 桥接（没有公开的客户端切会话 API，匹配不到时静默不跳）。
+- 趋势图未叠加 target 虚线（只在图例显示预算），后续可加。
+- 上下文 composition 沿用原有实测数据，没有对历史会话逐条重算 tokenMeter（会非常慢）。
+
+## 8. v0.24.0 落地：可解释、可信任、可行动
+
+0.23.0 之前的面板把入口堆在“能力”上：概览、趋势、事件、脚手架平铺，用户要自己判断“现在该做什么”。0.24.0 按三个问题重排：**是否在工作 / 为什么这样 / 我该做什么**。
+
+### 8.1 信息架构
+
+| 变化 | 之前 | 现在 | 理由 |
+| --- | --- | --- | --- |
+| 侧栏名称 | `智能体具身` / `Agent Embodiment` | `Context` / `上下文` | 面板实际做的是上下文观测与控制，原名称承诺过大 |
+| 顶层 tab | 概览 / 趋势 / 事件 / 设置 / 脚手架（5） | Overview / Trend / Events / Settings（4） | 脚手架是低频一次性操作，不该占顶层 |
+| 脚手架入口 | 顶层 tab | Settings → Labs | 保留能力，降低误触和对“插件在改写 profile”的担忧 |
+| 顶部提示条 | 无 | `AlertStrip`：控制未挂载 / 预算异常 / 测量缺失 | 把“看到的数字可能不生效”提前说清楚，不用用户自己发现 |
+| Dock | 只有一个百分比圆环 | 用量指示器 + 余额胶囊；控制未挂载时带警告标记 | composer 附近只放“现在够不够用” |
+
+### 8.2 新增模块
+
+| 模块 | 位置 | 作用 |
+| --- | --- | --- |
+| `OnboardingCard` | 首次运行的 Overview | 三步引导：预算校准、压缩策略、挂载授权；可跳过，设置里可改 |
+| `HealthCard` | Overview | `buildHealth()` 的 control / preset / config / budget / measurement 五项检查 |
+| `InsightCards` | Overview | 6 条可执行洞察，每条带跳转（去 Events / 去 Settings / 去 Labs） |
+| `SavingsCard` | Overview | 成功压缩省下的 token 与折算金额，明确写“估算，不是退款” |
+| `SessionCompare` | Trend | 选两个会话并排比较 tokens / 请求 / 费用 / 压缩次数 |
+| `PricingSection` | Settings | 自定义 `modelPricing` 行（match / input / cacheRead / cacheWrite / output） |
+| `DataCard` | Settings → 数据 | 扫描范围、导出 JSON/CSV、按范围清理、告警开关 |
+
+### 8.3 文案与状态约定
+
+- 双口径必须分开写：插件预算线（`contextWindowTokens` × `triggerAt`）与模型窗口读数不合并成一个百分比。
+- 未知模型费用显示 `—`，不显示 0；节省估算缺记录同样显示 `—`。
+- 控制未挂载时，工具/提示词开关不可用，文案说明“需要先挂载控制行”，并给出设置入口。
+- 首次引导的跳过是显式出口，默认值不会因此被静默改写；`autoMountControl` 授权与“已挂载”是两个状态。
+
+### 8.4 未做
+
+- 没有重做视觉主题；仍是内联样式 + `--dsw-alias-*` token，不引 CSS 框架。
+- 没有新增环形以外的图表类型；趋势图仍未叠加 target 虚线。
+- Trend 的会话对比限两个会话，不支持多选或导出对比结果。
+- 0.24.0 的 UI 变更只有静态断言与语法检查，没有重新做截图层面的回归；`docs/ui/0.23-*` 截图反映的是上一版布局。
+
+## 9. 与实现的核对（v0.45.0，2026-11-15）
+
+本文档 §2–§4 写于 2026-10-18，§8 写于 0.24.0。之后面板改了很多轮但文档没跟，导致「提案里的问题」看起来像还没修。这一节做一次实测核对：逐项对着 `client-src/` 与 `test/static.mjs` 的断言确认现状。
+
+### 9.1 §2 问题清单现状
+
+| 编号 | 问题 | 现状 | 证据 |
+| --- | --- | --- | --- |
+| P0-1 | 概览卡被纵向 flex 撑到 320px | **已修** | `styles.card` 不再带 `flex`，只有横向容器用的 `styles.cardFill` 保留 `flex: 1 1 320px` |
+| P0-2 | 空态占满高卡、文案孤零零 | **已修** | 空态改虚线框；加载态有 skeleton；错误态有重试入口（三态齐） |
+| P0-3 | 四色图例挤一行、数值不右对齐 | **已修** | 图例 2×2 网格 + `tabular-nums` |
+| P0-4 | 没有总体状态徽章 | **已修** | 用 `--dsw-alias-state-*` 着色，阈值信息进 badge |
+| P1-1 | 概览卡层级弱 | **已修** | 环形图 + 中心百分比 + 右侧 KPI 小格 |
+| P1-2 | 控制卡 3 行说明 + 超长按钮 | **已修** | 一行状态 badge + 精简按钮（`ControlSection`） |
+| P1-3 | 配置卡无单位、保存反馈分离 | **已修** | 字段带单位；显示来源（config / default / session）；保存后行内反馈 |
+| P1-4 | 列表缺筛选、分组头随滚动消失 | **已修** | 有搜索框、「仅看已启用」筛选、分组头 `sticky` |
+| P1-5 | Dock 缺状态文案与入口、无焦点环 | **已修** | 警告色、popover 入口「打开完整面板」、`:focus-visible` 焦点环（0.47.0，注入作用域受限的 `<style>`）均已具备 |
+| P1-6 | 空态/错误态文案不一致 | **已修** | skeleton / 虚线空态 / 错误卡三态统一 |
+| P2 | 折叠记忆 | **已做** | 卡片头折叠 + `localStorage` 记忆 |
+| P2 | `prefers-reduced-motion` | **已做** | 见 §6 第 104 行：v0.14.19 起就在 `apply` 里注入 `<style>` 关闭过渡（§9 初版误判为「未做」，只查了 `20-styles.js` 而漏了 `90-apply.js`） |
+| P2 | 数值 hover tooltip | **已做** | compact 值 + 精确 token 提示 |
+| P2 | 概览条「上一轮增量」标记 | **已做** | 增量 badge 存在 |
+
+**§2 的 14 条问题至此全部落地**（P1-5 的焦点环 0.47.0，`prefers-reduced-motion` 自 0.14.19 就有）。不在原提案内的唯一待办是导出字段选择（P3）。
+
+### 9.5 一条自查失败记录
+
+§9 初版把 `prefers-reduced-motion` 判成「未做」，其实它从 v0.14.19 就实现了——本文档 §6 第 104 行本来写着。错因是核对时只 grep 了 `20-styles.js`（样式对象），没看 `90-apply.js`（运行时注入 `<style>`），也没读完自己的 §6。
+
+教训：**跨文件的能力要按「能力」查而不是按「文件」查**。行内样式、注入 `<style>`、组件内 `onKeyDown` 是三条不同的实现路径，只查其中一条就会得出相反结论。0.47.0 起 `static.mjs` 会用断言锁住这两段样式注入，避免再出现「文档说没做、其实早做了」。
+
+### 9.2 §8.2 模块对照
+
+§8.2 列的 8 个模块全部存在，且都在 `client-src/50-sections.js`：`OnboardingCard`、`HealthCard`、`InsightCards`、`SavingsCard`、`SessionCompare`、`PricingSection`、`DataCard`、`AlertStrip`。
+
+此后新增、文档未登记的模块：
+
+| 模块 | 位置 | 作用 |
+| --- | --- | --- |
+| `ControlSection` | Settings | 控制行启停、压缩策略与阈值 |
+| `ConfigSection` | Settings | 全局预算/阈值/分析范围 |
+| `BalanceDisplayCard` | Overview / Dock | 余额与峰谷时段 |
+| `SessionBudgetCard` | Settings | 单会话预算覆盖（`/embody <tokens>` 的 UI 版） |
+| `LabsCard` | Settings → Labs | 脚手架生成入口 |
+| `OnboardingReopen` | Settings | 重新打开首次引导 |
+| `KpiBand` | Trend | 顶部 KPI 带 |
+| `BillingCard` | Trend | 峰谷计费视图 |
+| `DailyChart` | Trend | 按日趋势 |
+| `SessionCards` | Trend | 会话列表与选中 |
+| `TrendCard` | Trend | 区间趋势 |
+| `EventsCard` | Events | 压缩与事件流水 |
+
+### 9.3 洞察：6 → 11 条，且可一键处理
+
+§8.2 写的是「6 条可执行洞察，每条带跳转」。现状：
+
+- 规则 **11 条**（`insights.js`），面板展示上限 10 条（`results.slice(0, 10)`）。新增的有 `cache-hit-low`、`near-limit-not-compacted`、`budget-unconfirmed`、`analytics-truncated` 等。
+- 每条除 `action`（跳转到 tab / 锚点）外，可带 `apply: { path, body, label }` —— 面板渲染第二个按钮，点击直接写配置并刷新（0.43.0）。当前三条有 `apply`：`near-limit-not-compacted`（启用控制行）、`budget-unconfirmed`（确认预算）、`analytics-truncated`（把扫描上限放宽到 200）。
+
+### 9.4 怎么防止再次漂移
+
+本轮把「文档声明的模块必须真的存在」做成了断言：`test/static.mjs` 的 `UI-PROPOSAL 模块清单与 client.js 一致` 会读取本文档 §8.2 与 §9.2 的表格，逐个检查 `client.js` 里存在同名组件函数，双向核对（文档有而代码无、代码有而文档无都会失败）。
+
+另外 §2 的截图证据（`docs/ui/current-panel-*.png`）已经过时，不再作为核对依据；要看现状用 `scripts/ui-screenshot.mjs` 现拍。

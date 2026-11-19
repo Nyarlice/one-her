@@ -1,0 +1,177 @@
+/**
+ * 纯离线测试：会话日志折叠与聚合口径（不依赖 Cordis / DSH）。
+ *
+ * 运行：node test/metrics.mjs
+ */
+import { csvCell, csvDocument, estimateInputCost, foldSession, sessionDetail, summarizeFolds, isPeakTime, configureHolidays, beijingYear, holidayInfo } from '../metrics.js'
+
+const checks = []
+function check(name, condition, detail) {
+  checks.push({ name, ok: Boolean(condition), detail })
+  console.log(`${condition ? 'ok  ' : 'FAIL'} - ${name}${condition || detail === undefined ? '' : ` (${typeof detail === 'string' ? detail : JSON.stringify(detail)})`}`)
+}
+
+const now = Date.now()
+const t0 = now - 2 * 60 * 60 * 1000
+const events = [
+  { type: 'session/title', seq: 1, time: t0, data: { title: '测试会话' } },
+  { type: 'turn/start', seq: 2, time: t0 + 100, data: { turn: 1 } },
+  { type: 'step/start', seq: 3, time: t0 + 120, data: { turn: 1, step: 1 } },
+  {
+    type: 'assistant/message',
+    seq: 4,
+    time: t0 + 1100,
+    data: { turn: 1, step: 1, usage: { inputTokens: 100, cacheReadTokens: 900, outputTokens: 50, totalTokens: 1050 }, message: { source: { provider: 'deepseek', model: 'deepseek-chat' } } },
+  },
+  { type: 'turn/end', seq: 5, time: t0 + 1200, data: { turn: 1 } },
+  { type: 'turn/start', seq: 6, time: t0 + 2000, data: { turn: 2 } },
+  { type: 'step/start', seq: 7, time: t0 + 2020, data: { turn: 2, step: 1 } },
+  { type: 'compaction/start', seq: 8, time: t0 + 2100, data: { turn: 2, compactionId: 'c1' } },
+  { type: 'compaction/summary', seq: 9, time: t0 + 4100, data: { turn: 2, compactionId: 'c1', shadowedTokenCount: 1234, summary: [{ type: 'text', text: 'summary' }], usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 } } },
+  { type: 'compaction/end', seq: 10, time: t0 + 4100, data: { turn: 2, compactionId: 'c1' } },
+  { type: 'tool/call', seq: 11, time: t0 + 4200, data: { turn: 2, step: 1, name: 'read' } },
+  { type: 'agent/inbox/spliced', seq: 12, time: t0 + 4300, data: {} },
+  {
+    type: 'assistant/message',
+    seq: 13,
+    time: t0 + 5000,
+    data: { turn: 2, step: 1, usage: { inputTokens: 20, cacheReadTokens: 0, outputTokens: 10, totalTokens: 30 }, message: { source: { provider: 'deepseek', model: 'deepseek-chat' } } },
+  },
+  { type: 'turn/end', seq: 14, time: t0 + 5200, data: { turn: 2 } },
+]
+
+const fold = foldSession({ id: 'session-test', createdAt: t0, cwd: '/work' }, events)
+check('标题取最后的 session/title', fold.title === '测试会话', fold.title)
+check('汇总 usage（含压缩摘要调用）', fold.usage.total === 1110 && fold.usage.cacheRead === 900, fold.usage)
+check('请求数 / 轮数 / 工具调用', fold.requests.length === 2 && fold.counts.turns === 2 && fold.counts.toolCalls === 1, fold.counts)
+check('按工具名记录调用次数', fold.tools.read === 1, fold.tools)
+check('缓存命中率', Math.abs(fold.cacheHit - 900 / 1030) < 1e-9, fold.cacheHit)
+check('成本按模型价格估算（含压缩摘要）', fold.cost !== null && Math.abs(fold.cost - 0.00095) < 1e-9, fold.cost)
+check('成本拆分包含缓存命中/未命中/输出', Math.abs(fold.costParts.input - 0.00026) < 1e-9 && Math.abs(fold.costParts.cacheRead - 0.00045) < 1e-9 && Math.abs(fold.costParts.output - 0.00024) < 1e-9, fold.costParts)
+
+// 官方 V4.1 Flash 人民币峰谷价：高峰 2 / 0.04 / 8，空闲 1 / 0.02 / 4（每 1M tokens）。
+const flashUsage = { inputTokens: 1_000_000, cacheReadTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 3_000_000 }
+const flashEvent = (time) => ({ type: 'assistant/message', seq: 1, time, data: { usage: flashUsage, message: { source: { provider: 'deepseek', model: 'deepseek-v4.1-flash' } } } })
+const peakFold = foldSession({ id: 'flash-peak' }, [flashEvent(Date.UTC(2026, 9, 23, 2, 0))])
+const offPeakFold = foldSession({ id: 'flash-off' }, [flashEvent(Date.UTC(2026, 9, 23, 13, 0))])
+const weekendFold = foldSession({ id: 'flash-weekend' }, [flashEvent(Date.UTC(2026, 9, 24, 2, 0))])
+check('V4.1 Flash 高峰时段按官方价', Math.abs(peakFold.cost - 10.04) < 1e-9, peakFold.cost)
+check('V4.1 Flash 空闲时段按官方价', Math.abs(offPeakFold.cost - 5.02) < 1e-9, offPeakFold.cost)
+check('周末按空闲价', Math.abs(weekendFold.cost - 5.02) < 1e-9, weekendFold.cost)
+check('峰谷标记写入请求明细', peakFold.requests[0].costParts.peak === true && offPeakFold.requests[0].costParts.peak === false, peakFold.requests[0].costParts)
+check('压缩轮数与耗时', fold.counts.compactions === 1 && fold.compactions[0].durationMs === 2000, fold.compactions[0])
+check('压缩 shadowed tokens', fold.compactions[0].shadowedTokens === 1234, fold.compactions[0])
+check('压缩摘要 usage 进入总账', fold.compactions[0].usage?.total === 30 && fold.compactions[0].cost !== null, fold.compactions[0])
+check('时间线包含压缩/注入', fold.timeline.some((item) => item.kind === 'compaction') && fold.timeline.some((item) => item.kind === 'inject'), fold.timeline)
+check('活跃时长按 turn 计算', fold.activeMs === 1100 + 3200, fold.activeMs)
+check('按日桶覆盖全部事件', fold.daily.length === 1 && fold.daily[0].tokens === 1110 && fold.daily[0].requests === 2, fold.daily)
+
+const summary = summarizeFolds([fold], { now, days: 7 })
+check('聚合 KPI：会话/tokens', summary.kpi.sessions === 1 && summary.kpi.tokens === 1110, summary.kpi)
+check('聚合 KPI：压缩/注入计数', summary.kpi.compactions === 1 && summary.kpi.injections === 1, summary.kpi)
+check('聚合 KPI 与日图一致', summary.kpi.tokens === summary.daily.reduce((sum, day) => sum + day.tokens, 0), { kpi: summary.kpi.tokens, daily: summary.daily.reduce((sum, day) => sum + day.tokens, 0) })
+check('7 天桶补齐', summary.daily.length === 7, summary.daily.length)
+check('会话卡片字段', summary.sessions[0].id === 'session-test' && summary.sessions[0].title === '测试会话', summary.sessions[0])
+check('聚合 KPI 带成本拆分', summary.kpi.costParts && Math.abs(summary.kpi.costParts.cacheRead - 0.00045) < 1e-9, summary.kpi.costParts)
+check('聚合带按工具调用统计', summary.toolUsage?.read === 1, summary.toolUsage)
+
+// 跨区间会话：KPI 只应统计区间内的日桶，而不是整段会话。
+const spanning = foldSession({ id: 'session-span', createdAt: now - 20 * 24 * 3600 * 1000 }, [
+  { type: 'assistant/message', seq: 1, time: now - 20 * 24 * 3600 * 1000, data: { usage: { inputTokens: 1000, outputTokens: 100, totalTokens: 1100 }, message: { source: { provider: 'deepseek', model: 'deepseek-chat' } } } },
+  { type: 'assistant/message', seq: 2, time: now - 1000, data: { usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 }, message: { source: { provider: 'deepseek', model: 'deepseek-chat' } } } },
+])
+const spanningSummary = summarizeFolds([spanning], { now, days: 7 })
+check('区间 KPI 只统计区间内用量', spanningSummary.kpi.tokens === 15, { kpi: spanningSummary.kpi.tokens, session: spanning.usage.total })
+check('区间 KPI 与日图一致（跨区间）', spanningSummary.kpi.tokens === spanningSummary.daily.reduce((sum, day) => sum + day.tokens, 0), spanningSummary.daily)
+
+const detail = sessionDetail(fold)
+check('会话详情：请求序列', detail.requests.length === 2 && detail.requests[0].prompt === 1000, detail.requests)
+check('会话详情：压缩标记', detail.compactions.length === 1 && detail.compactions[0].shadowedTokens === 1234, detail.compactions)
+check('会话详情：请求带上最近一次压缩', detail.requests[0].compaction === null && detail.requests[1].compaction?.shadowedTokens === 1234, detail.requests.map((request) => request.compaction))
+check('会话详情请求带成本拆分', detail.requests[0].costParts && Math.abs(detail.requests[0].costParts.input - 0.0002) < 1e-9, detail.requests[0].costParts)
+
+const unknown = foldSession({ id: 's2' }, [
+  { type: 'assistant/message', seq: 1, time: now, data: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 }, message: { source: { provider: 'agnes', model: 'agnes-3.0-flash' } } } },
+])
+check('未知模型不伪造费用', unknown.cost === null, unknown.cost)
+check('输入 token 节省估算按模型价', Math.abs(estimateInputCost(1_000_000, 'deepseek-v4.1-flash', undefined, Date.UTC(2026, 9, 23, 2, 0)) - 2) < 1e-9, estimateInputCost(1_000_000, 'deepseek-v4.1-flash', undefined, Date.UTC(2026, 9, 23, 2, 0)))
+check('未知模型不伪造节省', estimateInputCost(1000, 'agnes-3.0-flash') === null, estimateInputCost(1000, 'agnes-3.0-flash'))
+const custom = foldSession({ id: 's2b' }, [
+  { type: 'assistant/message', seq: 1, time: now, data: { usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, totalTokens: 2_000_000 }, message: { source: { provider: 'custom', model: 'deepseek-v4.1-flash' } } } },
+], [{ match: 'deepseek-v4', input: 1, cacheRead: 0, output: 2 }])
+check('自定义价格表可补充内置未覆盖的模型', custom.cost !== null && Math.abs(custom.cost - 3) < 1e-9, custom.cost)
+const old = foldSession({ id: 's3', createdAt: now - 40 * 24 * 3600 * 1000 }, [
+  { type: 'assistant/message', seq: 1, time: now - 40 * 24 * 3600 * 1000, data: { usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } } },
+])
+const range = summarizeFolds([old], { now, days: 7 })
+check('范围外的会话被过滤', range.kpi.sessions === 0, range.kpi.sessions)
+
+// CSV 单元格：公式注入防护与 RFC 4180 引号。
+check('CSV：普通文本原样输出', csvCell('hello') === 'hello', csvCell('hello'))
+check('CSV：逗号/引号/换行按 RFC 4180 引号', csvCell('a,"b"\nc') === '"a,""b""\nc"', csvCell('a,"b"\nc'))
+check('CSV：= 开头的文本被中和', csvCell('=SUM(A1)') === "'=SUM(A1)", csvCell('=SUM(A1)'))
+check('CSV：+ / @ 开头的文本被中和', csvCell('+1') === "'+1" && csvCell('@cmd') === "'@cmd", [csvCell('+1'), csvCell('@cmd')])
+check('CSV：- 开头的文本被中和', csvCell('-1+2') === "'-1+2", csvCell('-1+2'))
+check('CSV：真实数字保留数值形态', csvCell(-12.5) === '-12.5', csvCell(-12.5))
+check('CSV：null/undefined 变空串', csvCell(null) === '' && csvCell(undefined) === '', [csvCell(null), csvCell(undefined)])
+
+// CSV 文档：Excel/WPS 在中文 Windows 上需要 BOM 才按 UTF-8 解析。
+const csvDoc = csvDocument(['id,title', '1,测试会话'])
+check('CSV 文档以 BOM 开头', csvDoc.charCodeAt(0) === 0xfeff, csvDoc.charCodeAt(0))
+check('CSV 文档保留表头与行、以换行结尾', csvDoc.slice(1) === 'id,title\n1,测试会话\n', JSON.stringify(csvDoc.slice(1)))
+check('CSV 文档接受空数组', csvDocument([]) === '\uFEFF\n', JSON.stringify(csvDocument([])))
+
+// 峰谷判定：工作日高峰上浮、周末与法定节假日不上浮。
+// 2026-03-05 是周四；2026-10-01 是周四但属国庆假期；2026-03-07 是周六。
+const at = (iso) => new Date(iso).getTime()
+check('工作日 10:00（北京时间）算高峰', isPeakTime(at('2026-03-05T10:00:00+08:00')) === true)
+check('工作日 12:30 不算高峰（午休）', isPeakTime(at('2026-03-05T12:30:00+08:00')) === false)
+check('工作日 15:00 算高峰', isPeakTime(at('2026-03-05T15:00:00+08:00')) === true)
+check('周六 10:00 不算高峰', isPeakTime(at('2026-03-07T10:00:00+08:00')) === false)
+check('国庆（2026-10-01 周四 10:00）不算高峰', isPeakTime(at('2026-10-01T10:00:00+08:00')) === false)
+check('春节（2026-02-17 周二 15:00）不算高峰', isPeakTime(at('2026-02-17T15:00:00+08:00')) === false)
+check('节假日表可覆盖（自定义空表时该日恢复高峰）', isPeakTime(at('2026-10-01T10:00:00+08:00'), new Set()) === true)
+
+// 自定义价支持峰谷两档：给了 peak/offPeak 就按各自时段取价，没给则全天同价。
+// estimateInputCost 返回把 tokens 按输入价折算后的金额（number）。
+const peakRows = [{ match: /custom-model/i, input: 10, cacheRead: 1, cacheWrite: 10, output: 20, peak: { input: 30, cacheRead: 3, cacheWrite: 30, output: 60 }, offPeak: { input: 10, cacheRead: 1, cacheWrite: 10, output: 20 } }]
+const peakCost = estimateInputCost(1000000, 'custom-model', peakRows, at('2026-03-05T10:00:00+08:00'))
+const offPeakCost = estimateInputCost(1000000, 'custom-model', peakRows, at('2026-03-05T20:00:00+08:00'))
+check('自定义价：1M 输入在高峰期按 peak 档计价（30 CNY）', Math.abs(peakCost - 30) < 1e-9, peakCost)
+check('自定义价：1M 输入在空闲时段按平档计价（10 CNY）', Math.abs(offPeakCost - 10) < 1e-9, offPeakCost)
+const flatRows = [{ match: /custom-model/i, input: 7, cacheRead: 1, cacheWrite: 7, output: 14 }]
+check('自定义价：没给峰谷时全天同价', Math.abs(estimateInputCost(1000000, 'custom-model', flatRows, at('2026-03-05T10:00:00+08:00')) - estimateInputCost(1000000, 'custom-model', flatRows, at('2026-03-05T20:00:00+08:00'))) < 1e-9)
+check('自定义价：节假日按平档计价（国庆 10:00）', Math.abs(estimateInputCost(1000000, 'custom-model', peakRows, at('2026-10-01T10:00:00+08:00')) - 10) < 1e-9)
+
+// 节假日可配置：默认「内置 ∪ 配置补充」，ignoreBuiltin 时只用配置。
+configureHolidays({ add: ['2026-12-25'] })
+check('配置补充的节假日不算高峰（2026-12-25 周五）', isPeakTime(at('2026-12-25T10:00:00+08:00')) === false)
+check('合并语义：内置表仍生效（国庆仍是假日）', isPeakTime(at('2026-10-01T10:00:00+08:00')) === false)
+configureHolidays({ add: [], ignoreBuiltin: true })
+check('ignoreBuiltin 后内置表失效（国庆恢复高峰）', isPeakTime(at('2026-10-01T10:00:00+08:00')) === true)
+configureHolidays({ add: ['2026-10-01'], ignoreBuiltin: true })
+check('ignoreBuiltin 时仍认配置里的日期', isPeakTime(at('2026-10-01T10:00:00+08:00')) === false)
+configureHolidays()
+check('重置后回到内置表', isPeakTime(at('2026-10-01T10:00:00+08:00')) === false && isPeakTime(at('2026-12-25T10:00:00+08:00')) === true)
+
+// 节假日覆盖年份：健康检查靠它判断「要不要提醒跨年补日期」。
+configureHolidays()
+const baseInfo = holidayInfo()
+check('holidayInfo 暴露内置年份', JSON.stringify(baseInfo.builtinYears) === JSON.stringify(['2026']), baseInfo.builtinYears)
+check('holidayInfo 的 years 覆盖内置年份', baseInfo.years.includes('2026'), baseInfo.years)
+configureHolidays({ add: ['2027-01-01', '2027-02-06'] })
+check('补充日期后 years 出现 2027', holidayInfo().years.includes('2027'), holidayInfo().years)
+check('builtinYears 不因自定义日期改变', JSON.stringify(holidayInfo().builtinYears) === JSON.stringify(['2026']), holidayInfo().builtinYears)
+configureHolidays()
+
+check('beijingYear 按北京时间换算年份', beijingYear(Date.parse('2026-12-31T16:30:00Z')) === 2027 && beijingYear(Date.parse('2026-12-31T15:30:00Z')) === 2026, [
+  beijingYear(Date.parse('2026-12-31T16:30:00Z')),
+  beijingYear(Date.parse('2026-12-31T15:30:00Z')),
+])
+
+const failed = checks.filter((item) => !item.ok)
+console.log(`\n[metrics] ${checks.length - failed.length}/${checks.length} 项通过`)
+if (failed.length > 0) {
+  console.error(`[metrics] 失败项：${failed.map((item) => item.name).join(' | ')}`)
+  process.exitCode = 1
+}
