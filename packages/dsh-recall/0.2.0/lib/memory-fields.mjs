@@ -21,7 +21,7 @@ export const AUTHORITIES = [
 export const PRECISIONS = ['day', 'month', 'year', 'unknown']
 
 // 2026-11-12（第二批）：体状态机。category 只说「长期画像 / 事件」，分不出
-//   「一直成立」和「当前状态」——「主人正在找工作」被塞进 stable_profile，于是渲染成
+//   「一直成立」和「当前状态」——「用户正在找工作」被塞进 stable_profile，于是渲染成
 //   「一直：」，valid_until 也永远填不上（规则里 stable_profile 一律 null）。
 //   aspect 三态就是把这个分清楚：
 //     trait  一直成立（称呼、性格、约定、长期喜好）—— 不衰减、不失效

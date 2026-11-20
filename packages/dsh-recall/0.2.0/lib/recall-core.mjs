@@ -19,7 +19,7 @@ import { homedir } from 'node:os'
 import { filterUsable, aspectOf } from './memory-fields.mjs'
 import { renderBlock } from './render-memories.mjs'
 
-// 默认策略（参数与 fish-memory 同源；maxItems 按主人拍板改成 3）
+// 默认策略（参数与 fish-memory 同源；maxItems 按项目需要改成 3）
 export const DEFAULT_POLICY = {
   baselineWeight: 0.55, // 基础权重
   activationWeight: 0.25, // 鲜活度权重
@@ -28,9 +28,9 @@ export const DEFAULT_POLICY = {
   baseHalfLifeDays: 30, // 事件半衰期（天）
   emotionHalfLifeDays: 7, // 情绪半衰期（天）
   threshold: 0.3, // 门槛卡 C（证据），不卡 P
-  maxItems: 3, // 事件每轮最多几条（主人拍板 1-3 条）
+  maxItems: 3, // 事件每轮最多几条（项目需要 1-3 条）
   maxChars: 800, // 注入文本总字数上限
-  factsMax: 0, // 常驻层关闭（主人拍板 A 方案：只上相关 1-3 条，画像/约定也走相关检索）
+  factsMax: 0, // 常驻层关闭（项目选 A 方案：只上相关 1-3 条，画像/约定也走相关检索）
   unknownActivation: 0.5, // 没写时间 / 长期事实的鲜活度按几成算
   rarityK: 0.8, // C = s/(s+K) 的软化系数
 }

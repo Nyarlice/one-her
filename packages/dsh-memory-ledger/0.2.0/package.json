@@ -1,0 +1,44 @@
+{
+  "name": "dsh-memory-ledger",
+  "version": "0.2.0",
+  "description": "记账层：每轮对话结束自动扫会话文件，把对话写进事件流水和按天分页的简版流水，并顺带生成近况、补向量索引、起一个本地 token 明细页。",
+  "license": "MIT",
+  "type": "module",
+  "author": "one-her",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nyarlice/one-her.git",
+    "directory": "packages/dsh-memory-ledger"
+  },
+  "homepage": "https://github.com/Nyarlice/one-her/tree/main/packages/dsh-memory-ledger#readme",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "memory",
+    "ledger",
+    "one-her"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "示例数据",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*"
+  }
+}

@@ -5,7 +5,7 @@
 // 另外顺带起了 token 明细网页服务（127.0.0.1:8720），点鲸鱼娘消耗泡泡跳过去看明细。
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { pathToFileURL, fileURLToPath } from 'node:url'
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 
@@ -13,12 +13,17 @@ export const name = 'dsh-memory-ledger'
 export const inject = []
 
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
-// 2026-11-09：这里原来写死了 token-server.mjs 的绝对路径，
-// 家的位置一搬，插件加载直接爆（审查点名的三个硬编码之一）。
+// 2026-11-17：脚本从「家目录下的 tools」搬进了本包 lib/scripts/。
+// 先找包内的（这样别人装上也跑得起来），包内没有再回落到旧布局（本机升级期兼容）。
+const SCRIPTS_DIR = join(fileURLToPath(new URL('.', import.meta.url)), 'scripts')
+const scriptPath = (n) => (existsSync(join(SCRIPTS_DIR, n)) ? join(SCRIPTS_DIR, n) : join(DSH_HOME, 'tools', n))
+// 2026-11-09：这里原来写死绝对路径
+//   import { startTokenServer } from 'file:///<家目录>/tools/token-server.mjs'
+// 家一搬家，插件加载直接爆（审查点名的三个硬编码之一，recall 那个早改了，这个漏了）。
 // 改成从 DSH_HOME 拼路径 + 动态 import：token 网页不是核心功能，文件不在也只是少个页面，
 // 不该把整个记账插件带下来。
 async function startTokenServerFromHome(port, logger) {
-  const file = join(DSH_HOME, 'tools', 'token-server.mjs')
+  const file = scriptPath('token-server.mjs')
   try {
     const mod = await import(pathToFileURL(file).href)
     if (typeof mod.startTokenServer !== 'function') throw new Error('token-server.mjs 里没有 startTokenServer')
@@ -31,7 +36,7 @@ async function startTokenServerFromHome(port, logger) {
 const NODE_CANDIDATES = [
   join(DSH_HOME, 'dsh-runtimes', 'dsh-next-primary-runtime', 'dependencies', 'node', 'bin', 'node.exe'),
 ]
-const SCRIPT = join(DSH_HOME, 'tools', 'commit-scan.mjs')
+const SCRIPT = scriptPath('commit-scan.mjs')
 // 会话 id -> 标题。标题只有运行时拿得到（DSH 的 sessionTitle 服务折叠日志得到），
 // 离线脚本 commit-scan 拿不到；这里每轮结束时顺手记下，供它生成「近况」时补会话名。
 const NAMES_FILE = join(DSH_HOME, '记忆', 'session-names.json')
