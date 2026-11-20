@@ -4,7 +4,7 @@
 //   · 冲浪会话一天好几轮，每轮都塞一万字的家书是烧钱；
 //   · 她需要的是「最近家里在干什么、踩过哪些坑、广场上不能说什么」，不需要背整个人格——
 //     人格冲浪插件自己有人设文件。
-// 所以这份控制在一千字上下，只挑：近况前几条、判据集里跟广场/隐私有关的几条、错题集最近一条、长期记忆库最近一节。
+// 所以这份控制在一千字上下，只挑：近况前几条、判断标准里跟广场/隐私有关的几条、错题集最近一条、长期记忆库最近一节。
 //
 // 用法：
 //   node tools\build-surf-letter.mjs          # 生成 记忆\家书-冲浪版.md
@@ -43,7 +43,7 @@ function bullets(text, n, len = 110) {
   return out
 }
 
-// 判据集里只挑跟「广场 / 真实信息 / 私聊」有关的条目 —— 冲浪时最要紧的就是这个
+// 判断标准里只挑跟「广场 / 真实信息 / 私聊」有关的条目 —— 冲浪时最要紧的就是这个
 function privacyRules(text, n = 2, len = 140) {
   const out = []
   for (const line of String(text).split('\n')) {
@@ -89,7 +89,7 @@ function lastMemoSection(text, n = 3) {
 
 export function buildLetter(home = process.env.DSH_HOME || join(homedir(), '.dsh')) {
   const recent = read(join(home, '近况.md'))
-  const rules = read(join(home, '判据集.md'))
+  const rules = read(join(home, '判断标准.md'))
   const mistakes = read(join(home, '错题集.md'))
   const memo = read(join(home, '长期记忆库.md'))
 

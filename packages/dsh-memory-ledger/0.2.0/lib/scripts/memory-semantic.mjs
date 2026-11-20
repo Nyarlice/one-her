@@ -325,7 +325,7 @@ if (argv.includes('--json')) {
     score: Number(score.toFixed(4)),
     id: e.id,
     time: e.time,
-    who: e.type === 'user/message' ? '主人' : '我',
+    who: e.type === 'user/message' ? '用户' : '我',
     text: e.text,
   }));
   process.stdout.write(JSON.stringify(rows));
@@ -335,7 +335,7 @@ if (argv.includes('--json')) {
 console.log(`语义检索（${MODEL}）命中 ${scored.length} 条，显示最像的 ${Math.min(limit, scored.length)} 条；查询：${query}\n`);
 for (const { e, score } of scored.slice(0, limit)) {
   const when = new Date(e.time).toLocaleString('zh-CN', { hour12: false }).slice(0, 16);
-  const who = e.type === 'user/message' ? '主人' : '我';
+  const who = e.type === 'user/message' ? '用户' : '我';
   const text = e.text.replace(/\s+/g, ' ').slice(0, 120);
   console.log(`${score.toFixed(3)} · ${when} · ${who}：${text}`);
 }

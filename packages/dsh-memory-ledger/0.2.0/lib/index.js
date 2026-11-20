@@ -2,7 +2,7 @@
 // 每轮对话结束（turn/end）时，触发一次 dsh-home\tools\commit-scan.mjs，
 // 由那个脚本负责扫会话文件、增量记账（幂等靠它的 scan-state.json）。
 // 本插件只做「触发」，不碰提取/幂等逻辑，也不读事件内容。
-// 另外顺带起了 token 明细网页服务（127.0.0.1:8720），点鲸鱼娘消耗泡泡跳过去看明细。
+// 另外顺带起了 token 明细网页服务（127.0.0.1:8720），点界面消耗泡泡跳过去看明细。
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { pathToFileURL, fileURLToPath } from 'node:url'
@@ -47,7 +47,7 @@ export function apply(ctx) {
   logger.info?.('[dsh-memory-ledger] armed, watching turn/end')
   let timer = null
 
-  // token 明细网页服务（127.0.0.1:8720）：随宿主起，点鲸鱼娘消耗泡泡跳过来看明细。
+  // token 明细网页服务（127.0.0.1:8720）：随宿主起，点界面消耗泡泡跳过来看明细。
   // 端口被占（前一个实例还在）会静默，不吵。异步起，起不来只 warn 一句。
   let tokenServer = null
   startTokenServerFromHome(8720, logger).then((s) => { tokenServer = s }).catch(() => {})

@@ -13,7 +13,7 @@ const HOME = process.env.DSH_HOME || 'E:\\ai_project\\DSH_Next\\dsh-home';
 const EVENTS_FILE = join(HOME, '记忆', 'events.jsonl');
 const NAMES_FILE = join(HOME, '记忆', 'session-names.json');
 // 2026-11-07：光看 cwd 认场次会漏 —— QQ 私聊的会话本来建在 im-bridge-chats 底下，
-// 后来被搬进「澜米」工作区（搬家会改写 header 的 cwd），痕迹就没了。
+// 后来被搬进「人格」工作区（搬家会改写 header 的 cwd），痕迹就没了。
 // 桥自己的 state.json 记着「哪个聊天占着哪个 sessionId」，记账脚本还把认过的
 // sessionId 攒进 `记忆\入口映射.json`（只增不减，换了会话也还认得老的）。
 const BRIDGE_STATE_FILE = join(HOME, 'im-bridge', 'state.json');
@@ -121,7 +121,7 @@ const T = (e) => {
  * F6：判断一条记录来自哪个场次。
  * 广场 = QQ群（cwd 含 im-bridge + group）。
  * 其余（Web 工作区、QQ私聊、B站私聊）算家。
- * 2026-11-06 主人定：B站对外（评论/公开）算广场，但「主人和B站澜米的私聊」算家；
+ * 2026-11-06 项目定：B站对外（评论/公开）算广场，但「用户和 B 站那边的私聊」算家；
  * B站对外不经过DSH会话、不进账本，所以这里把 B站 会话归家。
  */
 function isSquareSource(e) {
@@ -183,7 +183,7 @@ if (args.includes('--smart') && hits.length < SMART_MIN) {
 console.log('命中 ' + hits.length + ' 条，显示最近 ' + picked.length + ' 条（关键词：' + keywords.join(' ') + '；范围：' + (since ? 'since ' + since : days > 0 ? days + ' 天' : '不限') + '；场次：' + asRole + (blocked ? '，权限过滤掉 ' + blocked + ' 条家来源' : '') + '）');
 console.log('');
 for (const e of picked) {
-  const who = e.type === 'user/message' ? '主人' : '我';
+  const who = e.type === 'user/message' ? '用户' : '我';
   const txt = String(e.text || '').replace(/\s+/g, ' ').trim();
   const show = txt.length > 300 ? txt.slice(0, 300) + '…' : txt;
   console.log(T(e) + ' · ' + label(e) + ' · ' + who + '：' + show);

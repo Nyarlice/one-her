@@ -187,7 +187,7 @@ function trunc(s) {
 }
 function diaryLine(e) {
   const hhmm = localHHMM(e.time);
-  if (e.type === 'user/message') return `- ${hhmm} 主人：${trunc(e.text)}`;
+  if (e.type === 'user/message') return `- ${hhmm} 用户：${trunc(e.text)}`;
   if (e.type === 'assistant/message') return `- ${hhmm} 我：${trunc(e.text)}`;
   if (e.type === 'tool/call') return `- ${hhmm} [动作] ${e.name}`;
   if (e.type === 'turn/start') return `- ${hhmm} —— 回合开始`;
@@ -226,11 +226,11 @@ const NAMES_FILE = join(MEMORY_DIR, 'session-names.json');
 const MAX_SESSIONS = 10;
 
 // 入口判断：广场 = QQ群（im-bridge group）；其余（workspaces、私聊、B站私聊）算家。
-// 2026-11-06 主人定：B站对外算广场但不进账本，B站会话归家。
+// 2026-11-06 项目定：B站对外算广场但不进账本，B站会话归家。
 //
 // 2026-11-07 修：光看 cwd 会认错 —— QQ 私聊那条会话本来建在
 // `im-bridge-chats\<账号>\<聊天>`（桥的 index.js 写死的），后来被搬进
-// `workspaces\澜米`，而搬会话会把 header 里的 cwd 一并改写 —— 痕迹就没了，
+// `workspaces\<人格名>`，而搬会话会把 header 里的 cwd 一并改写 —— 痕迹就没了，
 // 于是这条 36 条对话的 QQ 会话被记成了 [Web]。
 // im-bridge 自己的 state.json 里记着「哪个聊天正占着哪个 sessionId」，那才是准的：
 //   chats["private:2994589881"].sessionId = "session-fda1a1e8-…"
@@ -241,7 +241,7 @@ const MAX_SESSIONS = 10;
 const BRIDGE_STATE_FILE = join(HOME, 'im-bridge', 'state.json');
 const ENTRY_MAP_FILE = join(MEMORY_DIR, '入口映射.json');
 // 2026-11-09：B站 会话的 id 是我们自己起的（`bili-whale`），不是 uuid；而它的 cwd 搬家后是
-//   `workspaces\澜米`，`whale-work` 也匹配不上。原来 `entryOf` 靠 `id.includes('bili')` 认它，
+//   `workspaces\<人格名>`，`whale-work` 也匹配不上。原来 `entryOf` 靠 `id.includes('bili')` 认它，
 //   一旦这个会话改名/换 id 就会掉进 [Web]。改成显式清单 + 写进入口映射，三处判定查同一本账。
 const BILI_SESSIONS = ['bili-whale'];
 const entryMapSaved = (() => {
@@ -281,7 +281,7 @@ function isSquare(cwd, sessionId) {
   return false;
 }
 
-// F11：跨入口识别——这条活动来自哪个入口（让「主人在别处活动过」一眼可见）。
+// F11：跨入口识别——这条活动来自哪个入口（让「用户在别处活动过」一眼可见）。
 function entryOf(cwd, sessionId) {
   const id = String(sessionId || '').toLowerCase();
   const byBridge = bridgeSessions.get(id);
@@ -324,7 +324,7 @@ function redact(text) {
 
 // F10：人格文件哈希校验——只证明「文件被改过」，不证明「改得对」。
 // 每次跑比对一次；变了就在近况顶部提示一次，然后更新记录（下次不重复提示）。
-const PERSONA_FILES = ['灵魂设定.md', '说话的规矩.md', '判据集.md', '错题集.md', '成长记录.md', '感官记忆.md', '操作手册.md'];
+const PERSONA_FILES = ['灵魂设定.md', '说话的规矩.md', '判断标准.md', '错题集.md', '成长记录.md', '感官记忆.md', '操作手册.md'];
 const PERSONA_HASH_FILE = join(MEMORY_DIR, '人格哈希.json');
 function personaChanged() {
   const cur = {};
@@ -393,7 +393,7 @@ function personaChanged() {
     if (h < 24) return `${h} 小时前`;
     return `${Math.round(h / 24)} 天前`;
   };
-  const who = (e) => (e.type === 'user/message' ? '主人' : '我');
+  const who = (e) => (e.type === 'user/message' ? '用户' : '我');
   const snippet = (e, isPublic) => {
     let txt = String(e.text || '').replace(/\s+/g, ' ').trim();
     if (isPublic) txt = redact(txt);
@@ -417,7 +417,7 @@ function personaChanged() {
     .filter((sid) => !isPublic || isSquare(latest.get(sid).cwd, sid))
     .map((sid) => {
       const e = latest.get(sid);
-      // F14：来源可信度最小版——主人明说 = S1；我生成的 = S3（不自动升成 S1/S2）。
+      // F14：来源可信度最小版——用户明说 = S1；我生成的 = S3（不自动升成 S1/S2）。
       const src = e.type === 'user/message' ? 'S1' : 'S3';
       return `- ${rel(e.time)} · [${entryOf(e.cwd, sid)}] ${label(e)} · 【${statusOf(sid, e.time)}】[${src}] ${who(e)}：${snippet(e, isPublic)}`;
     });
@@ -426,7 +426,7 @@ function personaChanged() {
     const title = isPublic ? '# 近况 · 广场版（脚本记 · 自动生成）' : '# 近况（脚本记 · 自动生成）';
     const hint = isPublic
       ? '只含公开会话（QQ群）；家（私聊、B站私聊）的话不在这里；硬格式真实信息已脱敏。新的在前。'
-      : '最近哪些会话在动、各会话最后在说什么。状态是脚本按「时间+关键词」启发式判断的，仅供参考。来源：[S1] 主人明说 / [S3] 我生成（推断，别当事实）。[入口] 标这条活动来自哪个入口。新的在前。';
+      : '最近哪些会话在动、各会话最后在说什么。状态是脚本按「时间+关键词」启发式判断的，仅供参考。来源：[S1] 用户明说 / [S3] 我生成（推断，别当事实）。[入口] 标这条活动来自哪个入口。新的在前。';
     const body = [
       title, '', hint, ...(personaWarn ? [personaWarn, ''] : []), '',
       r.length ? r.join('\n') : '（还没有记到任何对话）', '',

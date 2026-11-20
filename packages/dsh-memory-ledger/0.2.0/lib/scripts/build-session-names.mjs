@@ -11,7 +11,7 @@ const PROJ = join(HOME, 'storages', 'session_projcache', 'sessions')
 const namesFile = join(HOME, '记忆', 'session-names.json')
 
 // 2026-11-09：子代理单独起名。以前它们没标题，全被叫「未命名会话-时间」，
-//   还常常同名（批量子代理），主人看报告以为是自己的会话丢了。
+//   还常常同名（批量子代理），用户看报告以为是自己的会话丢了。
 const subMap = (() => {
   try {
     return JSON.parse(readFileSync(join(HOME, '记忆', '子代理映射.json'), 'utf8')) || {}
